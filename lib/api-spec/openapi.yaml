@@ -1,0 +1,523 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: Brochure Processor API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: brochure
+    description: Brochure operations
+  - name: product
+    description: Product operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /preview:
+    post:
+      operationId: previewFile
+      tags: [brochure]
+      summary: Upload a PDF or image to get page thumbnails
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/FileUploadInput"
+      responses:
+        "200":
+          description: Preview ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /process:
+    post:
+      operationId: processFile
+      tags: [brochure]
+      summary: OCR + AI process selected pages from an uploaded file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ProcessInput"
+      responses:
+        "200":
+          description: Processing complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /brochures:
+    get:
+      operationId: listBrochures
+      tags: [brochure]
+      summary: List all processed brochures
+      responses:
+        "200":
+          description: List of brochures
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Brochure"
+
+  /brochures/{id}:
+    delete:
+      operationId: deleteBrochure
+      tags: [brochure]
+      summary: Delete a brochure record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        "404":
+          description: Not found
+
+  /products:
+    get:
+      operationId: listProducts
+      tags: [product]
+      summary: List all saved products
+      responses:
+        "200":
+          description: List of saved products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+    post:
+      operationId: saveProducts
+      tags: [product]
+      summary: Save extracted products to the library
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveProductsInput"
+      responses:
+        "201":
+          description: Products saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaveProductsResult"
+
+  /products/{id}:
+    delete:
+      operationId: deleteProduct
+      tags: [product]
+      summary: Delete a saved product
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        "404":
+          description: Not found
+
+    patch:
+      operationId: updateProductImages
+      tags: [product]
+      summary: Replace the image gallery (up to 5 images) for a saved product
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductImagesInput"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
+    DeleteResult:
+      type: object
+      properties:
+        message:
+          type: string
+        id:
+          type: string
+      required:
+        - message
+
+    FileUploadInput:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+      required:
+        - file
+
+    ProcessInput:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+        selectedPages:
+          type: string
+          description: JSON array of page numbers to process
+        category:
+          type: string
+      required:
+        - file
+        - category
+
+    PagePreview:
+      type: object
+      properties:
+        pageNumber:
+          type: integer
+        imageUrl:
+          type: string
+      required:
+        - pageNumber
+        - imageUrl
+
+    PreviewResult:
+      type: object
+      properties:
+        isPdf:
+          type: boolean
+        totalPages:
+          type: integer
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PagePreview"
+        fileName:
+          type: string
+      required:
+        - isPdf
+        - totalPages
+        - pages
+        - fileName
+
+    ImagePoolItem:
+      type: object
+      description: >
+        One isolated image (embedded photo or full-page render) extracted from
+        the brochure, available for manual assignment to any product.
+      properties:
+        id:
+          type: string
+          description: Stable id for this pool image, unique within the ProcessResult.
+        url:
+          type: string
+        pageNumber:
+          type: integer
+        source:
+          type: string
+          enum: [embedded, page]
+          description: Whether this came from an embedded photo or a rendered full page.
+      required:
+        - id
+        - url
+        - pageNumber
+        - source
+
+    ExtractedProduct:
+      type: object
+      properties:
+        name:
+          type: string
+        model:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        price:
+          type: ["string", "null"]
+          description: Exact price/MRP string extracted from the brochure, if found.
+        specifications:
+          type: object
+          additionalProperties:
+            type: string
+        features:
+          type: array
+          items:
+            type: string
+        pages:
+          type: array
+          items:
+            type: integer
+        images:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+          description: >
+            Up to 5 image URLs assigned to this product. Initially populated
+            by best-guess auto-assignment; the frontend lets the user
+            reassign images from the global imagePool.
+      required:
+        - name
+        - features
+        - pages
+        - images
+
+    ProcessResult:
+      type: object
+      properties:
+        brochureId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        specifications:
+          type: array
+          items:
+            type: string
+        extractedImages:
+          type: array
+          items:
+            type: string
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractedProduct"
+        imagePool:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImagePoolItem"
+          description: >
+            Every isolated image found on the processed pages (embedded
+            photos plus full-page renders), regardless of whether it was
+            auto-assigned to a product. Drives the manual Image Pool UI.
+        rawText:
+          type: string
+      required:
+        - brochureId
+        - title
+        - description
+        - specifications
+        - extractedImages
+        - products
+        - imagePool
+
+    Brochure:
+      type: object
+      properties:
+        _id:
+          type: string
+        fileName:
+          type: string
+        category:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        specifications:
+          type: array
+          items:
+            type: string
+        extractedImages:
+          type: array
+          items:
+            type: string
+        uploadDate:
+          type: string
+          format: date-time
+      required:
+        - _id
+        - fileName
+        - category
+        - uploadDate
+
+    Product:
+      type: object
+      properties:
+        _id:
+          type: string
+        productName:
+          type: string
+        category:
+          type: string
+        model:
+          type: ["string", "null"]
+        description:
+          type: string
+        price:
+          type: ["string", "null"]
+        features:
+          type: array
+          items:
+            type: string
+        specifications:
+          type: object
+          additionalProperties:
+            type: string
+        images:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+        sourceFileName:
+          type: string
+        createdDate:
+          type: string
+          format: date-time
+      required:
+        - _id
+        - productName
+        - category
+        - createdDate
+
+    ProductInput:
+      type: object
+      properties:
+        productName:
+          type: string
+        category:
+          type: string
+        model:
+          type: ["string", "null"]
+        description:
+          type: string
+        price:
+          type: ["string", "null"]
+        features:
+          type: array
+          items:
+            type: string
+        specifications:
+          type: object
+          additionalProperties:
+            type: string
+        images:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+        sourceFileName:
+          type: string
+      required:
+        - productName
+        - category
+
+    UpdateProductImagesInput:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+      required:
+        - images
+
+    SaveProductsInput:
+      type: object
+      properties:
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductInput"
+        brochureId:
+          type: ["string", "null"]
+      required:
+        - products
+
+    SaveProductsResult:
+      type: object
+      properties:
+        savedCount:
+          type: integer
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+      required:
+        - savedCount
+        - products
