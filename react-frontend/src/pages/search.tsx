@@ -1,41 +1,66 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, MapPin, Building2, Package } from "lucide-react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { Search as SearchIcon, MapPin, Building2, Package, ImageOff } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 
-interface CompanyResult {
+// ─── Types ──────────────────────────────────────────────────────────────
+interface SearchResult {
   _id: string | number;
+  id?: string | number;
+  type: "business" | "product";
+  image?: string | null;
+
+  // business fields
   businessName?: string;
+  name?: string;
   tagline?: string;
-  description?: string;
   address1?: string;
   city?: string;
   state?: string;
   country?: string;
   pincode?: string;
+
+  // product fields
+  productName?: string;
+  slug?: string;
+  categoryName?: string;
+  brandName?: string;
+  businessName_product?: string;
+  minPrice?: string;
+  maxPrice?: string;
+
+  // shared
+  description?: string;
   matchType?: string;
   matchPercentage?: number;
   matchedKeyword?: string;
 }
 
-interface ProductResult {
-  _id: string | number;
-  productName?: string;
-  categoryName?: string;
-  brandName?: string;
-  businessName?: string;
-  description?: string;
-  minPrice?: string;
-  maxPrice?: string;
-  matchType?: string;
-  matchPercentage?: number;
-  matchedKeyword?: string;
+interface Pagination {
+  current_page: number;
+  limit: number;
+  total_results: number;
+  total_pages: number;
 }
+
+interface SearchResponse {
+  results: SearchResult[];
+  pagination: Pagination;
+}
+
+const PAGE_SIZE = 10;
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -51,14 +76,9 @@ function stripHtml(raw?: string): string {
   return raw.replace(/<[^>]*>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});/gi, " ").replace(/\s+/g, " ").trim();
 }
 
-async function fetchCompanies(query: string): Promise<CompanyResult[]> {
-  const res = await fetch(`/api/search/companies?q=${encodeURIComponent(query)}`);
-  if (!res.ok) throw new Error("Search request failed");
-  return res.json();
-}
-
-async function fetchProducts(query: string): Promise<ProductResult[]> {
-  const res = await fetch(`/api/search/products?q=${encodeURIComponent(query)}`);
+async function fetchSearch(query: string, page: number, type: string): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: query, page: String(page), limit: String(PAGE_SIZE), type });
+  const res = await fetch(`/api/search?${params.toString()}`);
   if (!res.ok) throw new Error("Search request failed");
   return res.json();
 }
@@ -84,10 +104,13 @@ function ResultSkeletons() {
     <div className="space-y-4">
       {[1, 2, 3].map((i) => (
         <Card key={i}>
-          <CardContent className="p-5">
-            <Skeleton className="h-5 w-1/3 mb-3" />
-            <Skeleton className="h-4 w-2/3 mb-2" />
-            <Skeleton className="h-4 w-full" />
+          <CardContent className="p-5 flex gap-4">
+            <Skeleton className="h-20 w-20 rounded-md shrink-0" />
+            <div className="flex-1">
+              <Skeleton className="h-5 w-1/3 mb-3" />
+              <Skeleton className="h-4 w-2/3 mb-2" />
+              <Skeleton className="h-4 w-full" />
+            </div>
           </CardContent>
         </Card>
       ))}
@@ -95,22 +118,231 @@ function ResultSkeletons() {
   );
 }
 
-function CompanySearchTab() {
-  const [query, setQuery] = useState("");
-  const debouncedQuery = useDebouncedValue(query.trim(), 350);
+function ResultThumb({ src, alt }: { src?: string | null; alt: string }) {
+  const [failed, setFailed] = useState(false);
 
-  const { data: results, isFetching } = useQuery({
-    queryKey: ["search-companies", debouncedQuery],
-    queryFn: () => fetchCompanies(debouncedQuery),
-    enabled: debouncedQuery.length > 0,
-  });
+  // Local brochure-extracted images are served by our own backend at
+  // /api/uploads/... (relative to this app's origin). Only B2B catalog
+  // images imported from the external source are relative paths that
+  // need the boncnetwork.com prefix — rewriting local paths the same way
+  // pointed them at a URL that doesn't exist there.
+  let finalSrc = src;
+  if (finalSrc && !finalSrc.startsWith("http") && !finalSrc.startsWith("/api/uploads")) {
+    const path = finalSrc.startsWith("/") ? finalSrc : `/${finalSrc}`;
+    finalSrc = `https://www.boncnetwork.com${path}`;
+  }
+
+  if (!finalSrc || failed) {
+    return (
+      <div className="h-20 w-20 rounded-md bg-muted flex items-center justify-center shrink-0">
+        <ImageOff className="h-6 w-6 text-muted-foreground/50" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={finalSrc}
+      alt={alt}
+      onError={() => setFailed(true)}
+      className="h-20 w-20 rounded-md object-cover shrink-0 border"
+    />
+  );
+}
+
+function BusinessCard({ item }: { item: SearchResult }) {
+  const name =
+    item.name || (item.businessName && item.businessName.trim() && item.businessName !== "1" ? item.businessName : "Unknown Business");
+  const location = [item.address1, item.city, item.state, item.country, item.pincode].filter(Boolean).join(", ");
+  const description = stripHtml(item.description);
 
   return (
-    <div className="space-y-6">
+    <Card className="hover-elevate transition-all">
+      <CardContent className="p-5 flex gap-4">
+        <ResultThumb src={item.image} alt={name} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Badge variant="outline" className="shrink-0 text-[10px] gap-1">
+                <Building2 className="h-3 w-3" /> Business
+              </Badge>
+              <h3 className="font-bold text-lg leading-tight truncate">{name}</h3>
+            </div>
+            {item.matchPercentage !== undefined && (
+              <Badge variant={matchBadgeVariant(item.matchType)} className="shrink-0 font-mono text-[10px]">
+                {item.matchType} · {item.matchPercentage.toFixed(0)}%
+              </Badge>
+            )}
+          </div>
+
+          {item.tagline && <p className="text-sm italic text-muted-foreground mb-2">{stripHtml(item.tagline)}</p>}
+
+          {location && (
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-2">
+              <MapPin className="h-3.5 w-3.5 shrink-0" />
+              <span>{location}</span>
+            </div>
+          )}
+
+          {description && <p className="text-sm text-foreground/80 line-clamp-3">{description}</p>}
+
+          {item.matchedKeyword && (
+            <p className="text-xs text-muted-foreground mt-3 font-mono">Matched: {item.matchedKeyword}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProductCard({ item }: { item: SearchResult }) {
+  const hasPriceRange =
+    item.minPrice && item.maxPrice && !(item.minPrice === "0.00" && item.maxPrice === "0.00");
+  const description = stripHtml(item.description);
+  const href = item.slug ? `/products/${item.slug}` : undefined;
+  const name = item.name || item.productName || "Unknown Product";
+
+  return (
+    <Card className="hover-elevate transition-all">
+      <CardContent className="p-5 flex gap-4">
+        <ResultThumb src={item.image} alt={name} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Badge variant="outline" className="shrink-0 text-[10px] gap-1">
+                <Package className="h-3 w-3" /> Product
+              </Badge>
+              {href ? (
+                <a href={href} className="font-bold text-lg leading-tight truncate hover:underline">
+                  {name}
+                </a>
+              ) : (
+                <h3 className="font-bold text-lg leading-tight truncate">{name}</h3>
+              )}
+            </div>
+            {item.matchPercentage !== undefined && (
+              <Badge variant={matchBadgeVariant(item.matchType)} className="shrink-0 font-mono text-[10px]">
+                {item.matchType} · {item.matchPercentage.toFixed(0)}%
+              </Badge>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mb-2">
+            {item.categoryName && (
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {item.categoryName.split(",")[0]}
+              </Badge>
+            )}
+            {item.brandName && <span>{item.brandName}</span>}
+            {hasPriceRange && (
+              <span className="font-mono">
+                ₹{item.minPrice} – ₹{item.maxPrice}
+              </span>
+            )}
+          </div>
+
+          {description && <p className="text-sm text-foreground/80 line-clamp-3 mb-2">{description}</p>}
+
+          {item.businessName && <p className="text-xs text-muted-foreground">By: {item.businessName}</p>}
+
+          {item.matchedKeyword && (
+            <p className="text-xs text-muted-foreground mt-3 font-mono">Matched: {item.matchedKeyword}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ResultsPagination({ pagination, onPageChange }: { pagination: Pagination; onPageChange: (page: number) => void }) {
+  if (pagination.total_pages <= 1) return null;
+
+  // Calculate next and previous availability
+  const has_previous = pagination.current_page > 1;
+  const has_next = pagination.current_page < pagination.total_pages;
+
+  // Small window of page numbers around the current page, capped to what exists.
+  const pages: number[] = [];
+  const start = Math.max(1, pagination.current_page - 2);
+  const end = Math.min(pagination.total_pages, pagination.current_page + 2);
+  for (let p = start; p <= end; p++) pages.push(p);
+
+  return (
+    <Pagination className="pt-2">
+      <PaginationContent>
+        <PaginationItem>
+          <PaginationPrevious
+            href="#"
+            aria-disabled={!has_previous}
+            className={!has_previous ? "pointer-events-none opacity-50" : undefined}
+            onClick={(e) => {
+              e.preventDefault();
+              if (has_previous) onPageChange(pagination.current_page - 1);
+            }}
+          />
+        </PaginationItem>
+
+        {pages.map((p) => (
+          <PaginationItem key={p}>
+            <PaginationLink
+              href="#"
+              isActive={p === pagination.current_page}
+              onClick={(e) => {
+                e.preventDefault();
+                onPageChange(p);
+              }}
+            >
+              {p}
+            </PaginationLink>
+          </PaginationItem>
+        ))}
+
+        <PaginationItem>
+          <PaginationNext
+            href="#"
+            aria-disabled={!has_next}
+            className={!has_next ? "pointer-events-none opacity-50" : undefined}
+            onClick={(e) => {
+              e.preventDefault();
+              if (has_next) onPageChange(pagination.current_page + 1);
+            }}
+          />
+        </PaginationItem>
+      </PaginationContent>
+    </Pagination>
+  );
+}
+
+export default function SearchPage() {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [filter, setFilter] = useState<"all" | "business" | "product">("all");
+  const debouncedQuery = useDebouncedValue(query.trim(), 350);
+
+  // Reset back to page 1 whenever the search term OR filter changes.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedQuery, filter]);
+
+  const { data, isFetching } = useQuery({
+    queryKey: ["search", debouncedQuery, page, filter],
+    queryFn: () => fetchSearch(debouncedQuery, page, filter),
+    enabled: debouncedQuery.length > 0,
+    placeholderData: keepPreviousData,
+  });
+
+  const results = data?.results ?? [];
+
+  return (
+    <div className="container py-8 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Search</h1>
+        <p className="text-muted-foreground">Search companies and products together — results are ranked and combined.</p>
+      </div>
+
       <div className="relative max-w-xl">
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="e.g. 'Electronics in Mumbai'"
+          placeholder="e.g. 'Steel Hinges' or 'Electronics in Mumbai'"
           className="pl-10"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -118,162 +350,59 @@ function CompanySearchTab() {
         />
       </div>
 
-      {debouncedQuery.length === 0 ? (
-        <EmptyState icon={Building2} title="Search companies" subtitle="Start typing a company name, category, or city." />
-      ) : isFetching ? (
-        <ResultSkeletons />
-      ) : !results || results.length === 0 ? (
-        <EmptyState icon={Building2} title="No companies found" subtitle="Try a different search term." />
-      ) : (
-        <div className="space-y-4">
-          {results.map((company) => {
-            const name =
-              company.businessName && company.businessName.trim() && company.businessName !== "1"
-                ? company.businessName
-                : "Unknown Business";
-            const location = [company.address1, company.city, company.state, company.country, company.pincode]
-              .filter(Boolean)
-              .join(", ");
-            const description = stripHtml(company.description);
-
-            return (
-              <Card key={company._id} className="hover-elevate transition-all">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between gap-4 mb-2">
-                    <h3 className="font-bold text-lg leading-tight">{name}</h3>
-                    {company.matchPercentage !== undefined && (
-                      <Badge variant={matchBadgeVariant(company.matchType)} className="shrink-0 font-mono text-[10px]">
-                        {company.matchType} · {company.matchPercentage.toFixed(0)}%
-                      </Badge>
-                    )}
-                  </div>
-
-                  {company.tagline && (
-                    <p className="text-sm italic text-muted-foreground mb-2">{stripHtml(company.tagline)}</p>
-                  )}
-
-                  {location && (
-                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-2">
-                      <MapPin className="h-3.5 w-3.5 shrink-0" />
-                      <span>{location}</span>
-                    </div>
-                  )}
-
-                  {description && <p className="text-sm text-foreground/80 line-clamp-3">{description}</p>}
-
-                  {company.matchedKeyword && (
-                    <p className="text-xs text-muted-foreground mt-3 font-mono">Matched: {company.matchedKeyword}</p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ProductSearchTab() {
-  const [query, setQuery] = useState("");
-  const debouncedQuery = useDebouncedValue(query.trim(), 350);
-
-  const { data: results, isFetching } = useQuery({
-    queryKey: ["search-products", debouncedQuery],
-    queryFn: () => fetchProducts(debouncedQuery),
-    enabled: debouncedQuery.length > 0,
-  });
-
-  return (
-    <div className="space-y-6">
-      <div className="relative max-w-xl">
-        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="e.g. 'Steel Hinges'"
-          className="pl-10"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+      {/* FILTER BUTTONS */}
+      <div className="flex gap-2">
+        <Badge 
+          variant={filter === "all" ? "default" : "outline"} 
+          className="cursor-pointer text-sm py-1"
+          onClick={() => setFilter("all")}
+        >
+          All Results
+        </Badge>
+        <Badge 
+          variant={filter === "business" ? "default" : "outline"} 
+          className="cursor-pointer text-sm py-1"
+          onClick={() => setFilter("business")}
+        >
+          <Building2 className="h-3 w-3 mr-1" /> Companies
+        </Badge>
+        <Badge 
+          variant={filter === "product" ? "default" : "outline"} 
+          className="cursor-pointer text-sm py-1"
+          onClick={() => setFilter("product")}
+        >
+          <Package className="h-3 w-3 mr-1" /> Products
+        </Badge>
       </div>
 
       {debouncedQuery.length === 0 ? (
-        <EmptyState icon={Package} title="Search products" subtitle="Start typing a product name or category." />
-      ) : isFetching ? (
+        <EmptyState icon={SearchIcon} title="Search companies & products" subtitle="Start typing a name, category, or city." />
+      ) : isFetching && !data ? (
         <ResultSkeletons />
-      ) : !results || results.length === 0 ? (
-        <EmptyState icon={Package} title="No products found" subtitle="Try a different search term." />
+      ) : results.length === 0 ? (
+        <EmptyState icon={SearchIcon} title="No results found" subtitle="Try a different search term." />
       ) : (
-        <div className="space-y-4">
-          {results.map((product) => {
-            const hasPriceRange =
-              product.minPrice && product.maxPrice && !(product.minPrice === "0.00" && product.maxPrice === "0.00");
-            const description = stripHtml(product.description);
+        <>
+          {data?.pagination && (
+            <p className="text-sm text-muted-foreground">
+              {data.pagination.total_results} result{data.pagination.total_results === 1 ? "" : "s"} · page{" "}
+              {data.pagination.current_page} of {data.pagination.total_pages}
+            </p>
+          )}
 
-            return (
-              <Card key={product._id} className="hover-elevate transition-all">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between gap-4 mb-2">
-                    <h3 className="font-bold text-lg leading-tight">{product.productName || "Unknown Product"}</h3>
-                    {product.matchPercentage !== undefined && (
-                      <Badge variant={matchBadgeVariant(product.matchType)} className="shrink-0 font-mono text-[10px]">
-                        {product.matchType} · {product.matchPercentage.toFixed(0)}%
-                      </Badge>
-                    )}
-                  </div>
+          <div className={`space-y-4 ${isFetching ? "opacity-60" : ""}`}>
+            {results.map((item) =>
+              item.type === "business" ? (
+                <BusinessCard key={`business-${item.id || item._id}`} item={item} />
+              ) : (
+                <ProductCard key={`product-${item.id || item._id}`} item={item} />
+              ),
+            )}
+          </div>
 
-                  <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mb-2">
-                    {product.categoryName && (
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {product.categoryName.split(",")[0]}
-                      </Badge>
-                    )}
-                    {product.brandName && <span>{product.brandName}</span>}
-                    {hasPriceRange && (
-                      <span className="font-mono">
-                        ₹{product.minPrice} – ₹{product.maxPrice}
-                      </span>
-                    )}
-                  </div>
-
-                  {description && <p className="text-sm text-foreground/80 line-clamp-3 mb-2">{description}</p>}
-
-                  {product.businessName && (
-                    <p className="text-xs text-muted-foreground">By: {product.businessName}</p>
-                  )}
-
-                  {product.matchedKeyword && (
-                    <p className="text-xs text-muted-foreground mt-3 font-mono">Matched: {product.matchedKeyword}</p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+          {data?.pagination && <ResultsPagination pagination={data.pagination} onPageChange={setPage} />}
+        </>
       )}
-    </div>
-  );
-}
-
-export default function SearchPage() {
-  return (
-    <div className="container py-8 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Search</h1>
-        <p className="text-muted-foreground">Search the B2B company directory or your extracted products.</p>
-      </div>
-
-      <Tabs defaultValue="companies">
-        <TabsList>
-          <TabsTrigger value="companies">Companies</TabsTrigger>
-          <TabsTrigger value="products">Products</TabsTrigger>
-        </TabsList>
-        <TabsContent value="companies" className="mt-6">
-          <CompanySearchTab />
-        </TabsContent>
-        <TabsContent value="products" className="mt-6">
-          <ProductSearchTab />
-        </TabsContent>
-      </Tabs>
     </div>
   );
 }

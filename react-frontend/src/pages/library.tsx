@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import {
   useListProducts, useDeleteProduct, useUpdateProductImages,
   getListProductsQueryKey,
@@ -23,7 +24,15 @@ export default function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
+  
+  // Track expanded cards for specs
+  const [expandedSpecs, setExpandedSpecs] = useState<Record<string, boolean>>({});
 
+  const toggleSpecs = (id: string) => {
+    setExpandedSpecs(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // ... (keep your existing handlers like persistImages and handleDelete)
   const persistImages = (id: string, images: string[]) => {
     updateImagesMutation.mutate({ id, data: { images } }, {
       onSuccess: () => {
@@ -119,7 +128,9 @@ export default function LibraryPage() {
               <CardContent className="flex-1 p-5">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <h3 className="font-bold text-lg leading-tight line-clamp-2" title={product.productName}>
-                    {product.productName}
+                    <Link href={`/products/${product._id}`} className="hover:underline hover:text-primary">
+                      {product.productName}
+                    </Link>
                   </h3>
                   {product.price && (
                     <span className="shrink-0 text-sm font-mono font-semibold text-primary">{product.price}</span>
@@ -136,16 +147,22 @@ export default function LibraryPage() {
 
                 {product.specifications && Object.keys(product.specifications).length > 0 && (
                   <div className="mt-4 text-xs space-y-1.5 font-mono">
-                    {Object.entries(product.specifications).slice(0, 3).map(([key, val]) => (
-                      <div key={key} className="flex justify-between gap-2 overflow-hidden">
-                        <span className="text-muted-foreground truncate">{key}</span>
-                        <span className="font-medium text-right truncate">{val}</span>
-                      </div>
-                    ))}
+                    {Object.entries(product.specifications)
+                      .slice(0, expandedSpecs[product._id] ? undefined : 3)
+                      .map(([key, val]) => (
+                        <div key={key} className="flex justify-between gap-2 overflow-hidden">
+                          <span className="text-muted-foreground truncate">{key}</span>
+                          <span className="font-medium text-right truncate">{val}</span>
+                        </div>
+                      ))}
                     {Object.keys(product.specifications).length > 3 && (
-                      <div className="text-muted-foreground italic text-[10px]">
-                        +{Object.keys(product.specifications).length - 3} more
-                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => toggleSpecs(product._id)}
+                        className="text-primary hover:underline italic text-[10px] mt-1 block focus:outline-none"
+                      >
+                        {expandedSpecs[product._id] ? "Show less" : `+${Object.keys(product.specifications).length - 3} more`}
+                      </button>
                     )}
                   </div>
                 )}

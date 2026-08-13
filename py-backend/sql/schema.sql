@@ -23,6 +23,8 @@ CREATE TABLE Products (
     Features            NVARCHAR(MAX)   NULL,  -- JSON array of strings
     Specifications      NVARCHAR(MAX)   NULL,  -- JSON object (key/value)
     Images              NVARCHAR(MAX)   NULL,  -- JSON array of image URLs (max 5)
+    ImagePath           NVARCHAR(1000)  NULL,  -- single primary image, used by search results
+    Slug                NVARCHAR(500)   NULL,  -- URL-friendly identifier
     SourceFileName      NVARCHAR(500)   NULL,
     CreatedDate         DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
 );
@@ -44,7 +46,8 @@ CREATE TABLE B2BCompanies (
     State               NVARCHAR(200)   NULL,
     Country             NVARCHAR(200)   NULL,
     Pincode             NVARCHAR(20)    NULL,
-    Landmark            NVARCHAR(500)   NULL
+    Landmark            NVARCHAR(500)   NULL,
+    ImagePath           NVARCHAR(1000)  NULL  -- company logo / cover image
 );
 
 CREATE TABLE B2BProducts (
@@ -75,7 +78,9 @@ CREATE TABLE B2BProducts (
     CountryOfOrigin               NVARCHAR(200)   NULL,
     MinimumOrderQuantity          NVARCHAR(200)   NULL,
     Status                        NVARCHAR(50)    NULL,
-    PublishDate                   NVARCHAR(50)    NULL
+    PublishDate                   NVARCHAR(50)    NULL,
+    ImagePath                     NVARCHAR(1000)  NULL,  -- primary product image
+    Slug                          NVARCHAR(500)   NULL   -- URL-friendly identifier
 );
 
 CREATE INDEX IX_Products_CreatedDate ON Products(CreatedDate DESC);
@@ -85,3 +90,4 @@ CREATE INDEX IX_B2BCompanies_City ON B2BCompanies(City);
 CREATE INDEX IX_B2BProducts_ProductName ON B2BProducts(ProductName);
 CREATE INDEX IX_B2BProducts_BusinessName ON B2BProducts(BusinessName);
 CREATE INDEX IX_B2BProducts_CategoryName ON B2BProducts(CategoryName);
+CREATE INDEX IX_B2BProducts_Slug ON B2BProducts(Slug);

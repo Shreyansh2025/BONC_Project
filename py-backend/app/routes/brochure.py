@@ -30,6 +30,7 @@ from app.utils.image_extractor import (
     get_pdf_page_count,
 )
 from app.utils.ocr_pool import recognize_batch
+from app.utils.product_search import build_index as rebuild_product_search_index
 from app.utils.serialize import json_col, serialize_row
 
 router = APIRouter()
@@ -211,8 +212,20 @@ def _insert_products_sync(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     with get_engine().begin() as conn:
         ids = []
         for row in rows:
-            result = conn.execute(insert(products_table()).values(**row))
-            ids.append(result.inserted_primary_key[0])
+            # Check if a product with the same name and source file already exists
+            existing = conn.execute(
+                select(products_table().c.Id).where(
+                    (products_table().c.ProductName == row["ProductName"]) & 
+                    (products_table().c.SourceFileName == row["SourceFileName"])
+                )
+            ).first()
+
+            if existing:
+                ids.append(existing[0])  # Reuse existing ID instead of duplicating
+            else:
+                result = conn.execute(insert(products_table()).values(**row))
+                ids.append(result.inserted_primary_key[0])
+
         fetched = (
             conn.execute(select(products_table()).where(products_table().c.Id.in_(ids)))
             .mappings()
@@ -229,6 +242,27 @@ def _list_products_sync() -> list[dict[str, Any]]:
             .all()
         )
         return [serialize_row("Products", r) for r in rows]
+
+
+def _get_product_sync(id_or_slug: str) -> dict[str, Any] | None:
+    """Looks a product up by numeric Id first (what the Library page links
+    with), falling back to Slug (what Search results link with) — same
+    param serves both callers without needing two routes."""
+    with get_engine().connect() as conn:
+        row = None
+        try:
+            id_ = int(id_or_slug)
+        except (TypeError, ValueError):
+            id_ = None
+        if id_ is not None:
+            row = conn.execute(
+                select(products_table()).where(products_table().c.Id == id_)
+            ).mappings().first()
+        if row is None:
+            row = conn.execute(
+                select(products_table()).where(products_table().c.Slug == id_or_slug)
+            ).mappings().first()
+        return serialize_row("Products", row) if row else None
 
 
 def _update_product_images_sync(id_: int, images: list[str]) -> dict[str, Any] | None:
@@ -529,6 +563,27 @@ async def list_products():
         )
 
 
+# ─── GET /products/{id_or_slug} ─────────────────────────────────────────────────
+# Powers the product detail page. Accepts either the numeric Id (used by the
+# Library page, which already has `_id` from the list response) or the Slug
+# (used by Search result links, which only carry `slug`) — whichever was
+# passed in is tried in that order.
+@router.get("/products/{id_or_slug}")
+async def get_product(id_or_slug: str):
+    try:
+        product = await asyncio.to_thread(_get_product_sync, id_or_slug)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        return product
+    except HTTPException:
+        raise
+    except Exception as err:
+        return JSONResponse(
+            status_code=500,
+            content={"message": "Error fetching product", "error": str(err)},
+        )
+
+
 # ─── POST /products ─────────────────────────────────────────────────────────────
 @router.post("/products")
 async def save_products(body: dict[str, Any]):
@@ -539,6 +594,15 @@ async def save_products(body: dict[str, Any]):
     try:
         rows = [ProductCreate(**p).to_row() for p in products]
         saved_docs = await asyncio.to_thread(_insert_products_sync, rows)
+
+        # Rebuild the local product search index so these products (and
+        # any fallback Model/ImagePath/Slug values just written) are
+        # searchable immediately, without waiting for a server restart.
+        try:
+            await rebuild_product_search_index()
+        except Exception as index_err:
+            logger.error(f"Failed to rebuild local product search index: {index_err}")
+
         return JSONResponse(
             status_code=201,
             content={
@@ -547,11 +611,11 @@ async def save_products(body: dict[str, Any]):
             },
         )
     except Exception as err:
+        logger.error(f"Save products error traceback: {repr(err)}") # Added detailed log
         return JSONResponse(
             status_code=500,
             content={"message": "Error saving products", "error": str(err)},
         )
-
 
 # ─── PATCH /products/{id} ────────────────────────────────────────────────────────
 @router.patch("/products/{product_id}")
@@ -579,6 +643,13 @@ async def delete_product(product_id: str):
         found = await asyncio.to_thread(_delete_product_sync, id_)
         if not found:
             raise HTTPException(status_code=404, detail="Product not found")
+
+        # Keep the search index from serving a deleted product.
+        try:
+            await rebuild_product_search_index()
+        except Exception as index_err:
+            logger.error(f"Failed to rebuild local product search index: {index_err}")
+
         return {"message": "Product deleted", "id": product_id}
     except HTTPException:
         raise

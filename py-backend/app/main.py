@@ -16,7 +16,7 @@ from app.logger import logger  # noqa: E402
 from app.routes.brochure import router as brochure_router  # noqa: E402
 from app.routes.health import router as health_router  # noqa: E402
 from app.routes.search import router as search_router  # noqa: E402
-from app.utils import b2b_product_search, b2b_search  # noqa: E402
+from app.utils import b2b_product_search, b2b_search, product_search  # noqa: E402
 from app.utils.bg_remover import warm_up as warm_up_bg_remover  # noqa: E402
 from app.utils.embedding_model import warm_up_model  # noqa: E402
 from app.utils.image_extractor import ensure_dir  # noqa: E402
@@ -34,15 +34,19 @@ async def lifespan(app: FastAPI):
             logger.error(f"Failed to connect to SQL Server: {err}")
             return
 
-        # Build the in-memory B2B search indexes (companies + product
-        # catalog) once SQL Server is up. Loading the embedding model is
-        # CPU/IO work, so it runs off the event loop too.
+        # Build the in-memory search indexes (B2B companies, B2B product
+        # catalog, AND the brochure-extracted local Products table) once
+        # SQL Server is up. Loading the embedding model is CPU/IO work, so
+        # it runs off the event loop too. All three share the same
+        # SentenceTransformer singleton (see embedding_model.py), so
+        # warming it up once here covers all of them.
         try:
             await asyncio.to_thread(warm_up_model)
             await b2b_search.build_index()
             await b2b_product_search.build_index()
+            await product_search.build_index()
         except Exception as err:
-            logger.error(f"Failed to build B2B search index: {err}")
+            logger.error(f"Failed to build search index: {err}")
 
     async def _warm_up_bg_remover():
         try:

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import os
@@ -157,8 +156,18 @@ def main() -> None:
         print(str(err))
         sys.exit(1)
 
-    rows = load_rows(XLSX_PATH)
-    print(f"Read {len(rows)} rows from {XLSX_PATH}")
+    # README documents:
+    #   python -m scripts.import_b2b_products "path/to/ProductAndServiceDocuments.xlsx"
+    # Honor that optional path argument instead of always silently importing
+    # the bundled sample file — otherwise pointing this at a real catalog
+    # export has no effect and the sample data (or nothing) gets imported.
+    xlsx_path = sys.argv[1] if len(sys.argv) > 1 else XLSX_PATH
+    if not os.path.isfile(xlsx_path):
+        print(f"File not found: {xlsx_path}")
+        sys.exit(1)
+
+    rows = load_rows(xlsx_path)
+    print(f"Read {len(rows)} rows from {xlsx_path}")
 
     engine = create_engine(url, future=True)
 

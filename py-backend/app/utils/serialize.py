@@ -35,6 +35,8 @@ _TABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "Features": ("features", "list"),
         "Specifications": ("specifications", "dict"),
         "Images": ("images", "list"),
+        "ImagePath": ("imagePath", None),
+        "Slug": ("slug", None),
         "SourceFileName": ("sourceFileName", None),
         "CreatedDate": ("createdDate", None),
     },
@@ -56,6 +58,7 @@ _TABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "Country": ("country", None),
         "Pincode": ("pincode", None),
         "Landmark": ("landmark", None),
+        "ImagePath": ("imagePath", None),
     },
     "B2BProducts": {
         "Id": ("_id", None),
@@ -86,6 +89,8 @@ _TABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "MinimumOrderQuantity": ("minimumOrderQuantity", None),
         "Status": ("status", None),
         "PublishDate": ("publishDate", None),
+        "ImagePath": ("imagePath", None),
+        "Slug": ("slug", None),
     },
 }
 

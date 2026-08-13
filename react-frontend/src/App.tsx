@@ -7,6 +7,7 @@ import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { Navbar } from '@/components/layout/Navbar';
 import ExtractPage from '@/pages/extract';
 import LibraryPage from '@/pages/library';
+import ProductDetailPage from '@/pages/product-detail';
 import HistoryPage from '@/pages/history';
 import SearchPage from '@/pages/search';
 
@@ -20,6 +21,7 @@ function Router() {
         <Switch>
           <Route path="/" component={ExtractPage} />
           <Route path="/products" component={LibraryPage} />
+          <Route path="/products/:idOrSlug" component={ProductDetailPage} />
           <Route path="/history" component={HistoryPage} />
           <Route path="/search" component={SearchPage} />
           <Route component={NotFound} />
