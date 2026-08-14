@@ -48,16 +48,13 @@ interface SearchResult {
   matchedKeyword?: string;
 }
 
-interface Pagination {
-  current_page: number;
-  limit: number;
-  total_results: number;
-  total_pages: number;
-}
-
+// Exact 5-field response contract
 interface SearchResponse {
-  results: SearchResult[];
-  pagination: Pagination;
+  Success: boolean;
+  Message: string;
+  Type: string;
+  Data: SearchResult[];
+  TotalCount: number;
 }
 
 const PAGE_SIZE = 10;
@@ -73,12 +70,23 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 
 function stripHtml(raw?: string): string {
   if (!raw) return "";
-  return raw.replace(/<[^>]*>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});/gi, " ").replace(/\s+/g, " ").trim();
+  return raw
+    .replace(/<[^>]*>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchSearch(query: string, page: number, type: string): Promise<SearchResponse> {
-  const params = new URLSearchParams({ q: query, page: String(page), limit: String(PAGE_SIZE), type });
-  const res = await fetch(`/api/search?${params.toString()}`);
+  const res = await fetch(`/api/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      SearchText: query,
+      PageNo: page,
+      PageSize: PAGE_SIZE,
+      Type: type,
+    }),
+  });
   if (!res.ok) throw new Error("Search request failed");
   return res.json();
 }
@@ -121,11 +129,6 @@ function ResultSkeletons() {
 function ResultThumb({ src, alt }: { src?: string | null; alt: string }) {
   const [failed, setFailed] = useState(false);
 
-  // Local brochure-extracted images are served by our own backend at
-  // /api/uploads/... (relative to this app's origin). Only B2B catalog
-  // images imported from the external source are relative paths that
-  // need the boncnetwork.com prefix — rewriting local paths the same way
-  // pointed them at a URL that doesn't exist there.
   let finalSrc = src;
   if (finalSrc && !finalSrc.startsWith("http") && !finalSrc.startsWith("/api/uploads")) {
     const path = finalSrc.startsWith("/") ? finalSrc : `/${finalSrc}`;
@@ -151,7 +154,10 @@ function ResultThumb({ src, alt }: { src?: string | null; alt: string }) {
 
 function BusinessCard({ item }: { item: SearchResult }) {
   const name =
-    item.name || (item.businessName && item.businessName.trim() && item.businessName !== "1" ? item.businessName : "Unknown Business");
+    item.name ||
+    (item.businessName && item.businessName.trim() && item.businessName !== "1"
+      ? item.businessName
+      : "Unknown Business");
   const location = [item.address1, item.city, item.state, item.country, item.pincode].filter(Boolean).join(", ");
   const description = stripHtml(item.description);
 
@@ -253,17 +259,27 @@ function ProductCard({ item }: { item: SearchResult }) {
   );
 }
 
-function ResultsPagination({ pagination, onPageChange }: { pagination: Pagination; onPageChange: (page: number) => void }) {
-  if (pagination.total_pages <= 1) return null;
+// Client computes pagination state from TotalCount and active page
+function ResultsPagination({
+  totalCount,
+  currentPage,
+  pageSize,
+  onPageChange,
+}: {
+  totalCount: number;
+  currentPage: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  if (totalPages <= 1) return null;
 
-  // Calculate next and previous availability
-  const has_previous = pagination.current_page > 1;
-  const has_next = pagination.current_page < pagination.total_pages;
+  const has_previous = currentPage > 1;
+  const has_next = currentPage < totalPages;
 
-  // Small window of page numbers around the current page, capped to what exists.
   const pages: number[] = [];
-  const start = Math.max(1, pagination.current_page - 2);
-  const end = Math.min(pagination.total_pages, pagination.current_page + 2);
+  const start = Math.max(1, currentPage - 2);
+  const end = Math.min(totalPages, currentPage + 2);
   for (let p = start; p <= end; p++) pages.push(p);
 
   return (
@@ -276,7 +292,7 @@ function ResultsPagination({ pagination, onPageChange }: { pagination: Paginatio
             className={!has_previous ? "pointer-events-none opacity-50" : undefined}
             onClick={(e) => {
               e.preventDefault();
-              if (has_previous) onPageChange(pagination.current_page - 1);
+              if (has_previous) onPageChange(currentPage - 1);
             }}
           />
         </PaginationItem>
@@ -285,7 +301,7 @@ function ResultsPagination({ pagination, onPageChange }: { pagination: Paginatio
           <PaginationItem key={p}>
             <PaginationLink
               href="#"
-              isActive={p === pagination.current_page}
+              isActive={p === currentPage}
               onClick={(e) => {
                 e.preventDefault();
                 onPageChange(p);
@@ -303,7 +319,7 @@ function ResultsPagination({ pagination, onPageChange }: { pagination: Paginatio
             className={!has_next ? "pointer-events-none opacity-50" : undefined}
             onClick={(e) => {
               e.preventDefault();
-              if (has_next) onPageChange(pagination.current_page + 1);
+              if (has_next) onPageChange(currentPage + 1);
             }}
           />
         </PaginationItem>
@@ -318,7 +334,6 @@ export default function SearchPage() {
   const [filter, setFilter] = useState<"all" | "business" | "product">("all");
   const debouncedQuery = useDebouncedValue(query.trim(), 350);
 
-  // Reset back to page 1 whenever the search term OR filter changes.
   useEffect(() => {
     setPage(1);
   }, [debouncedQuery, filter]);
@@ -330,7 +345,9 @@ export default function SearchPage() {
     placeholderData: keepPreviousData,
   });
 
-  const results = data?.results ?? [];
+  const results = data?.Data ?? [];
+  const totalCount = data?.TotalCount ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
     <div className="container py-8 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -352,22 +369,22 @@ export default function SearchPage() {
 
       {/* FILTER BUTTONS */}
       <div className="flex gap-2">
-        <Badge 
-          variant={filter === "all" ? "default" : "outline"} 
+        <Badge
+          variant={filter === "all" ? "default" : "outline"}
           className="cursor-pointer text-sm py-1"
           onClick={() => setFilter("all")}
         >
           All Results
         </Badge>
-        <Badge 
-          variant={filter === "business" ? "default" : "outline"} 
+        <Badge
+          variant={filter === "business" ? "default" : "outline"}
           className="cursor-pointer text-sm py-1"
           onClick={() => setFilter("business")}
         >
           <Building2 className="h-3 w-3 mr-1" /> Companies
         </Badge>
-        <Badge 
-          variant={filter === "product" ? "default" : "outline"} 
+        <Badge
+          variant={filter === "product" ? "default" : "outline"}
           className="cursor-pointer text-sm py-1"
           onClick={() => setFilter("product")}
         >
@@ -376,17 +393,20 @@ export default function SearchPage() {
       </div>
 
       {debouncedQuery.length === 0 ? (
-        <EmptyState icon={SearchIcon} title="Search companies & products" subtitle="Start typing a name, category, or city." />
+        <EmptyState
+          icon={SearchIcon}
+          title="Search companies & products"
+          subtitle="Start typing a name, category, or city."
+        />
       ) : isFetching && !data ? (
         <ResultSkeletons />
       ) : results.length === 0 ? (
         <EmptyState icon={SearchIcon} title="No results found" subtitle="Try a different search term." />
       ) : (
         <>
-          {data?.pagination && (
+          {data && (
             <p className="text-sm text-muted-foreground">
-              {data.pagination.total_results} result{data.pagination.total_results === 1 ? "" : "s"} · page{" "}
-              {data.pagination.current_page} of {data.pagination.total_pages}
+              {totalCount} result{totalCount === 1 ? "" : "s"} · page {page} of {totalPages}
             </p>
           )}
 
@@ -400,7 +420,14 @@ export default function SearchPage() {
             )}
           </div>
 
-          {data?.pagination && <ResultsPagination pagination={data.pagination} onPageChange={setPage} />}
+          {data && (
+            <ResultsPagination
+              totalCount={totalCount}
+              currentPage={page}
+              pageSize={PAGE_SIZE}
+              onPageChange={setPage}
+            />
+          )}
         </>
       )}
     </div>
