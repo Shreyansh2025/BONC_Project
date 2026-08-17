@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, insert, select, update
 
 from app.config import UPLOADS_DIR
-from app.db import brochures_table, get_engine, products_table
+from app.db import b2b_products_table, brochures_table, get_engine, products_table
 from app.logger import logger
 from app.models import AdditionalSection, BrochureCreate, ProductCreate, UpdateProductImages
 from app.utils.ai_structure import structure_text_with_ai
@@ -246,8 +246,9 @@ def _list_products_sync() -> list[dict[str, Any]]:
 
 def _get_product_sync(id_or_slug: str) -> dict[str, Any] | None:
     """Looks a product up by numeric Id first (what the Library page links
-    with), falling back to Slug (what Search results link with) — same
-    param serves both callers without needing two routes."""
+    with), then local Slug (Search links to your own brochure products),
+    then falls back to the B2BProducts catalog by Slug — since most Search
+    results are catalog products, not local ones."""
     with get_engine().connect() as conn:
         row = None
         try:
@@ -262,8 +263,13 @@ def _get_product_sync(id_or_slug: str) -> dict[str, Any] | None:
             row = conn.execute(
                 select(products_table()).where(products_table().c.Slug == id_or_slug)
             ).mappings().first()
-        return serialize_row("Products", row) if row else None
+        if row is not None:
+            return serialize_row("Products", row)
 
+        b2b_row = conn.execute(
+            select(b2b_products_table()).where(b2b_products_table().c.Slug == id_or_slug)
+        ).mappings().first()
+        return serialize_row("B2BProducts", b2b_row) if b2b_row else None
 
 def _update_product_images_sync(id_: int, images: list[str]) -> dict[str, Any] | None:
     with get_engine().begin() as conn:

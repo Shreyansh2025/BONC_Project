@@ -132,7 +132,7 @@ function ResultThumb({ src, alt }: { src?: string | null; alt: string }) {
   let finalSrc = src;
   if (finalSrc && !finalSrc.startsWith("http") && !finalSrc.startsWith("/api/uploads")) {
     const path = finalSrc.startsWith("/") ? finalSrc : `/${finalSrc}`;
-    finalSrc = `https://www.boncnetwork.com${path}`;
+    finalSrc = `https://api.boncnetwork.com${path}`;
   }
 
   if (!finalSrc || failed) {
