@@ -14,6 +14,13 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 interface SearchResult {
@@ -57,7 +64,7 @@ interface SearchResponse {
   TotalCount: number;
 }
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [5, 10, 15, 20, 30];
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -76,14 +83,14 @@ function stripHtml(raw?: string): string {
     .trim();
 }
 
-async function fetchSearch(query: string, page: number, type: string): Promise<SearchResponse> {
+async function fetchSearch(query: string, page: number, pageSize: number, type: string): Promise<SearchResponse> {
   const res = await fetch(`/api/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       SearchText: query,
       PageNo: page,
-      PageSize: PAGE_SIZE,
+      PageSize: pageSize,
       Type: type,
     }),
   });
@@ -259,20 +266,21 @@ function ProductCard({ item }: { item: SearchResult }) {
   );
 }
 
-// Client computes pagination state from TotalCount and active page
+// Client computes pagination state with page-size selector
 function ResultsPagination({
   totalCount,
   currentPage,
   pageSize,
   onPageChange,
+  onPageSizeChange,
 }: {
   totalCount: number;
   currentPage: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  if (totalPages <= 1) return null;
 
   const has_previous = currentPage > 1;
   const has_next = currentPage < totalPages;
@@ -283,71 +291,102 @@ function ResultsPagination({
   for (let p = start; p <= end; p++) pages.push(p);
 
   return (
-    <Pagination className="pt-2">
-      <PaginationContent>
-        <PaginationItem>
-          <PaginationPrevious
-            href="#"
-            aria-disabled={!has_previous}
-            className={!has_previous ? "pointer-events-none opacity-50" : undefined}
-            onClick={(e) => {
-              e.preventDefault();
-              if (has_previous) onPageChange(currentPage - 1);
-            }}
-          />
-        </PaginationItem>
+    <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+      {/* Page Size Selector */}
+      <div className="flex items-center gap-2 text-sm text-muted-foreground order-2 sm:order-1">
+        <span>Rows per page</span>
+        <Select
+          value={String(pageSize)}
+          onValueChange={(val) => {
+            onPageSizeChange(Number(val));
+            onPageChange(1); // Reset to first page when page size changes
+          }}
+        >
+          <SelectTrigger className="h-8 w-[70px]">
+            <SelectValue placeholder={pageSize} />
+          </SelectTrigger>
+          <SelectContent side="top">
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <SelectItem key={size} value={String(size)}>
+                {size}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
-        {pages.map((p) => (
-          <PaginationItem key={p}>
-            <PaginationLink
-              href="#"
-              isActive={p === currentPage}
-              onClick={(e) => {
-                e.preventDefault();
-                onPageChange(p);
-              }}
-            >
-              {p}
-            </PaginationLink>
-          </PaginationItem>
-        ))}
+      {/* Pagination Controls */}
+      <div className="order-1 sm:order-2">
+        {totalPages > 1 && (
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  aria-disabled={!has_previous}
+                  className={!has_previous ? "pointer-events-none opacity-50" : undefined}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (has_previous) onPageChange(currentPage - 1);
+                  }}
+                />
+              </PaginationItem>
 
-        <PaginationItem>
-          <PaginationNext
-            href="#"
-            aria-disabled={!has_next}
-            className={!has_next ? "pointer-events-none opacity-50" : undefined}
-            onClick={(e) => {
-              e.preventDefault();
-              if (has_next) onPageChange(currentPage + 1);
-            }}
-          />
-        </PaginationItem>
-      </PaginationContent>
-    </Pagination>
+              {pages.map((p) => (
+                <PaginationItem key={p}>
+                  <PaginationLink
+                    href="#"
+                    isActive={p === currentPage}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onPageChange(p);
+                    }}
+                  >
+                    {p}
+                  </PaginationLink>
+                </PaginationItem>
+              ))}
+
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  aria-disabled={!has_next}
+                  className={!has_next ? "pointer-events-none opacity-50" : undefined}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (has_next) onPageChange(currentPage + 1);
+                  }}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        )}
+      </div>
+    </div>
   );
 }
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [filter, setFilter] = useState<"all" | "business" | "product">("all");
   const debouncedQuery = useDebouncedValue(query.trim(), 350);
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQuery, filter]);
+  }, [debouncedQuery, filter, pageSize]);
 
   const { data, isFetching } = useQuery({
-    queryKey: ["search", debouncedQuery, page, filter],
-    queryFn: () => fetchSearch(debouncedQuery, page, filter),
+    queryKey: ["search", debouncedQuery, page, pageSize, filter],
+    queryFn: () => fetchSearch(debouncedQuery, page, pageSize, filter),
     enabled: debouncedQuery.length > 0,
     placeholderData: keepPreviousData,
   });
 
   const results = data?.Data ?? [];
   const totalCount = data?.TotalCount ?? 0;
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
   return (
     <div className="container py-8 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -424,8 +463,9 @@ export default function SearchPage() {
             <ResultsPagination
               totalCount={totalCount}
               currentPage={page}
-              pageSize={PAGE_SIZE}
+              pageSize={pageSize}
               onPageChange={setPage}
+              onPageSizeChange={setPageSize}
             />
           )}
         </>
