@@ -79,8 +79,8 @@ CREATE TABLE B2BProducts (
     MinimumOrderQuantity          NVARCHAR(200)   NULL,
     Status                        NVARCHAR(50)    NULL,
     PublishDate                   NVARCHAR(50)    NULL,
-    ImagePath                     NVARCHAR(1000)  NULL,  -- primary product image
     Slug                          NVARCHAR(500)   NULL   -- URL-friendly identifier
+    ImagePath                     NVARCHAR(1000)  NULL,  -- primary product image
 );
 
 CREATE INDEX IX_Products_CreatedDate ON Products(CreatedDate DESC);
