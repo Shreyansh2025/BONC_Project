@@ -30,7 +30,13 @@ export default defineConfig({
     port,
     host: '0.0.0.0',
     proxy: {
-      '/api': 'http://localhost:8000',
+      // Uncomment the one you want to use right now:
+
+      // LOCAL BACKEND:
+      // '/api': 'http://localhost:8000',
+
+      // CONTABO PRODUCTION BACKEND:
+      '/api': 'http://169.58.222.81:8000',
     },
   },
   preview: { port, host: '0.0.0.0' },

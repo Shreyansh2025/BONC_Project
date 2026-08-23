@@ -60,8 +60,22 @@ async def lifespan(app: FastAPI):
         except Exception as err:
             logger.error(f"Failed to warm up rembg model: {err}")
 
+    async def _auto_refresh_indexes():
+        while True:
+            await asyncio.sleep(3600)  # Wait 1 hour (3600 seconds)
+            logger.info("Auto-refreshing search indexes in the background...")
+            try:
+                await b2b_search.build_index()
+                await b2b_product_search.build_index()
+                await product_search.build_index()
+                logger.info("Search indexes refreshed successfully.")
+            except Exception as err:
+                logger.error(f"Failed to refresh indexes: {err}")
+
     asyncio.create_task(_connect())
     asyncio.create_task(_warm_up_bg_remover())
+    asyncio.create_task(_auto_refresh_indexes())
+    
     yield
 
 
