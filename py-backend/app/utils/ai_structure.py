@@ -8,7 +8,6 @@ import httpx
 
 from app.logger import logger
 
-MAX_TOKENS_PER_CHUNK = 3000
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
@@ -42,6 +41,8 @@ CRITICAL RULES FOR TABULAR / LIST PAGES:
 }
 
 IMPORTANT: Return ONLY valid JSON containing an array for every single row."""
+
+
 class ExtractedProduct(TypedDict):
     name: str
     model: str | None
@@ -52,6 +53,7 @@ class ExtractedProduct(TypedDict):
     features: list[str]
     pages: list[int]
     imageRegion: str | None
+
 
 async def structure_text_with_ai(raw_text: str) -> dict[str, Any]:
     api_key = os.getenv("GROQ_API_KEY")
@@ -71,9 +73,9 @@ async def structure_text_with_ai(raw_text: str) -> dict[str, Any]:
         for i, page_content in enumerate(pages):
             if not page_content.strip():
                 continue
-            
+
             page_text = f"--- PAGE {page_content}"
-            
+
             try:
                 chunk_products = await _process_chunk(client, page_text, api_key)
                 if chunk_products:
@@ -83,7 +85,7 @@ async def structure_text_with_ai(raw_text: str) -> dict[str, Any]:
                 # If hit with a rate limit, pause a bit longer to let Groq cool down
                 if "429" in str(err):
                     await asyncio.sleep(6)
-            
+
             # Mandatory safety delay between every single page
             if i < len(pages) - 1:
                 await asyncio.sleep(3)
@@ -94,35 +96,6 @@ async def structure_text_with_ai(raw_text: str) -> dict[str, Any]:
     deduped = _deduplicate_products(all_products)
     return _build_structured_response(deduped)
 
-def _chunk_text(text: str, max_tokens: int) -> list[str]:
-    max_chars = max_tokens * 4
-    pages = PAGE_PATTERN.split(text)
-    page_numbers = [int(m.group(1)) for m in PAGE_PATTERN.finditer(text)]
-
-    chunks: list[str] = []
-    current_chunk = ""
-    current_length = 0
-
-    for i, page_num in enumerate(page_numbers):
-        page_content = pages[(i * 2) + 2] if (i * 2) + 2 < len(pages) else ""
-        page_text = f"--- PAGE {page_num} ---\n{page_content}"
-        page_length = len(page_text)
-
-        if current_length + page_length > max_chars and len(current_chunk) > 0:
-            chunks.append(current_chunk.strip())
-            current_chunk = page_text
-            current_length = page_length
-        else:
-            current_chunk += "\n" + page_text
-            current_length += page_length
-
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-
-    if not chunks:
-        chunks = [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
-
-    return chunks if chunks else [text]
 
 async def _process_chunk(
     client: httpx.AsyncClient, chunk_text: str, api_key: str
@@ -149,7 +122,11 @@ async def _process_chunk(
     )
 
     if response.status_code >= 400:
-        raise RuntimeError(f"Groq API error {response.status_code}: {response.text}")
+        # Truncate the response body before logging — the full body could
+        # contain echoed request headers (including the Authorization key)
+        # in some error responses from Groq.
+        safe_body = response.text[:500] if response.text else "(empty)"
+        raise RuntimeError(f"Groq API error {response.status_code}: {safe_body}")
 
     data = response.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content")
@@ -165,14 +142,14 @@ async def _process_chunk(
     for p in products:
         if not isinstance(p, dict):
             continue
-        
+
         # Robust title fallback
         product_name = str(p.get("title") or p.get("name") or "").strip()
-        if not product_name or product_name.lower() in ['null', 'none']:
+        if not product_name or product_name.lower() in ["null", "none"]:
             product_name = "Unknown Product"
 
         price_val = str(p.get("price")).strip() if p.get("price") else None
-        if price_val and price_val.lower() in ['null', 'none', 'n/a']:
+        if price_val and price_val.lower() in ["null", "none", "n/a"]:
             price_val = None
 
         result.append(
@@ -190,15 +167,18 @@ async def _process_chunk(
         )
     return result
 
+
 def _parse_specs(val: Any) -> dict[str, str]:
     if not isinstance(val, dict):
         return {}
     return {str(k): str(v) for k, v in val.items()}
 
+
 def _parse_string_array(val: Any) -> list[str]:
     if not isinstance(val, list):
         return []
     return [str(v) for v in val if str(v)]
+
 
 def _parse_number_array(val: Any) -> list[int]:
     if not isinstance(val, list):
@@ -211,25 +191,33 @@ def _parse_number_array(val: Any) -> list[int]:
             continue
     return result
 
+
 def _deduplicate_products(products: list[ExtractedProduct]) -> list[ExtractedProduct]:
-    # SAFEGUARD: Only drop exact carbon copies, never drop unique items
+    """Drop exact duplicates only. Uses a composite key of (name, model) so
+    that two different products that happen to share a model code are NOT
+    incorrectly merged — only truly identical rows are removed."""
     seen: set[str] = set()
     deduped: list[ExtractedProduct] = []
     for p in products:
-        model_part = (p["model"] or "").lower().strip()
         name_part = (p["name"] or "").lower().strip()
-        
-        # If there's a model number, use it as the primary uniqueness key. Otherwise use name.
-        key = model_part if model_part else name_part
+        model_part = (p["model"] or "").lower().strip()
+
+        # Composite key: always include both name and model.
+        # Previously only model was used, which caused products with the
+        # same model code but different names to be silently dropped.
+        key = f"{name_part}|{model_part}" if name_part else ""
+
         if not key:
+            # No usable name at all — keep it, don't try to deduplicate
             deduped.append(p)
             continue
-            
+
         if key in seen:
             continue
         seen.add(key)
         deduped.append(p)
     return deduped
+
 
 def _build_structured_response(products: list[ExtractedProduct]) -> dict[str, Any]:
     formatted_products = [

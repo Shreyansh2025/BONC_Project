@@ -215,7 +215,7 @@ def _insert_products_sync(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Check if a product with the same name and source file already exists
             existing = conn.execute(
                 select(products_table().c.Id).where(
-                    (products_table().c.ProductName == row["ProductName"]) & 
+                    (products_table().c.ProductName == row["ProductName"]) &
                     (products_table().c.SourceFileName == row["SourceFileName"])
                 )
             ).first()
@@ -226,12 +226,16 @@ def _insert_products_sync(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 result = conn.execute(insert(products_table()).values(**row))
                 ids.append(result.inserted_primary_key[0])
 
-        fetched = (
-            conn.execute(select(products_table()).where(products_table().c.Id.in_(ids)))
-            .mappings()
-            .all()
-        )
-        return [serialize_row("Products", r) for r in fetched]
+        # Fetch all saved rows in one query, then re-sort to match the original
+        # insertion order. SQL does NOT guarantee that WHERE Id IN (...) returns
+        # rows in the same order as the id list, so we sort explicitly here.
+        fetched_map = {
+            r["Id"]: serialize_row("Products", r)
+            for r in conn.execute(
+                select(products_table()).where(products_table().c.Id.in_(ids))
+            ).mappings().all()
+        }
+        return [fetched_map[id_] for id_ in ids if id_ in fetched_map]
 
 
 def _list_products_sync() -> list[dict[str, Any]]:
@@ -337,6 +341,14 @@ async def process(
         raise HTTPException(status_code=400, detail="No file uploaded")
     if not category:
         raise HTTPException(status_code=400, detail="category is required")
+
+    from app.models import CATEGORIES
+    if category not in CATEGORIES:
+        # Accept unknown categories gracefully in case the frontend sends a
+        # custom value — clamp to "General" rather than hard-rejecting, so
+        # existing integrations don't break. Log it so we can track drift.
+        logger.warning(f"Unknown category '{category}' received — falling back to 'General'")
+        category = "General"
 
     selected_pages = _normalize_selected_pages(selectedPages)
     file_path, ext = await _save_upload(file)

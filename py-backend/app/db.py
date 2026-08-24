@@ -80,7 +80,20 @@ def connect_sql_server() -> None:
     url = build_engine_url()
 
     try:
-        _engine = create_engine(url, pool_pre_ping=True, future=True)
+        _engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            future=True,
+            # ---------------------------------------------------------------
+            # Connection pool limits — prevents unbounded connections under
+            # load on the Contabo server. Without these, every burst of
+            # concurrent requests opens a new connection and never closes it.
+            # ---------------------------------------------------------------
+            pool_size=5,       # Persistent connections kept open at all times
+            max_overflow=10,   # Extra connections allowed during traffic bursts
+            pool_timeout=30,   # Seconds to wait for a connection before error
+            pool_recycle=1800, # Recycle connections every 30 min (avoids stale)
+        )
         with _engine.connect() as conn:
             metadata.reflect(bind=conn, only=["Brochures", "Products", "B2BCompanies", "B2BProducts"])
         brochures = metadata.tables["Brochures"]
