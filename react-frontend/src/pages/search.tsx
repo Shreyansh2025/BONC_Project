@@ -368,21 +368,37 @@ function ResultsPagination({
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
+  const [activeSearch, setActiveSearch] = useState(""); 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [filter, setFilter] = useState<"all" | "business" | "product">("all");
-  const debouncedQuery = useDebouncedValue(query.trim(), 350);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmedQuery = query.trim();
+      if (trimmedQuery !== activeSearch) {
+        setActiveSearch(trimmedQuery);
+      }
+    }, 400); 
+
+    return () => clearTimeout(timer);
+  }, [query, activeSearch]);
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQuery, filter, pageSize]);
+  }, [activeSearch, filter, pageSize]);
 
   const { data, isFetching } = useQuery({
-    queryKey: ["search", debouncedQuery, page, pageSize, filter],
-    queryFn: () => fetchSearch(debouncedQuery, page, pageSize, filter),
-    enabled: debouncedQuery.length > 0,
+    queryKey: ["search", activeSearch, page, pageSize, filter],
+    queryFn: () => fetchSearch(activeSearch, page, pageSize, filter),
+    enabled: activeSearch.length > 0,
     placeholderData: keepPreviousData,
   });
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setActiveSearch(query.trim()); // Bypasses the 400ms wait
+  };
 
   const results = data?.Data ?? [];
   const totalCount = data?.TotalCount ?? 0;
@@ -395,16 +411,25 @@ export default function SearchPage() {
         <p className="text-muted-foreground">Search companies and products together — results are ranked and combined.</p>
       </div>
 
-      <div className="relative max-w-xl">
-        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="e.g. 'Steel Hinges' or 'Electronics in Mumbai'"
-          className="pl-10"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoFocus
-        />
-      </div>
+      {/* Form wrapper handles both the Search Button and the Enter key */}
+      <form onSubmit={handleSearchSubmit} className="relative max-w-xl flex gap-2">
+        <div className="relative flex-1">
+          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="e.g. 'Steel Hinges' or 'Electronics in Mumbai'"
+            className="pl-10"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <button 
+          type="submit" 
+          className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 text-sm font-medium transition-colors"
+        >
+          Search
+        </button>
+      </form>
 
       {/* FILTER BUTTONS */}
       <div className="flex gap-2">
@@ -431,11 +456,11 @@ export default function SearchPage() {
         </Badge>
       </div>
 
-      {debouncedQuery.length === 0 ? (
+      {activeSearch.length === 0 ? (
         <EmptyState
           icon={SearchIcon}
           title="Search companies & products"
-          subtitle="Start typing a name, category, or city."
+          subtitle="Type to search automatically, or press Enter to search instantly."
         />
       ) : isFetching && !data ? (
         <ResultSkeletons />
