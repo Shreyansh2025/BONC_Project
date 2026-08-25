@@ -9,7 +9,7 @@ import httpx
 from app.logger import logger
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 PAGE_PATTERN = re.compile(r"---\s*PAGE\s+(\d+)\s*---", re.IGNORECASE)
 
