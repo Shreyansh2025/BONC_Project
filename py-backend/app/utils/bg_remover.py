@@ -22,6 +22,7 @@ from __future__ import annotations
 from functools import lru_cache
 from io import BytesIO
 
+import onnxruntime as ort
 from PIL import Image
 from rembg import new_session, remove
 
@@ -39,8 +40,17 @@ MAX_INFERENCE_DIM = 1500
 
 @lru_cache(maxsize=1)
 def get_session():
-    """Builds (once) and caches the rembg inference session."""
-    return new_session(MODEL_NAME)
+    """Builds (once) and caches the rembg inference session.
+
+    Pins onnxruntime to 1 intra-op/inter-op thread. With 2 Gunicorn workers
+    each building their own session, unpinned onnxruntime will otherwise
+    spawn threads per CPU core per worker — thread/memory contention on a
+    small VPS that can contribute to worker aborts under load.
+    """
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = 1
+    opts.inter_op_num_threads = 1
+    return new_session(MODEL_NAME, sess_options=opts)
 
 
 def warm_up() -> None:

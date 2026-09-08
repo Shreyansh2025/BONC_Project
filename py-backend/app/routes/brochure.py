@@ -45,17 +45,8 @@ MAX_IMAGES_PER_PRODUCT = 5
 async def remove_bg(file: UploadFile):
     input_bytes = await file.read()
 
-    # Runs on rembg's cached, pre-warmed session (see app/utils/bg_remover.py)
-    # instead of building a fresh ONNX session per request — this is what was
-    # causing the ~1 minute delay.
-    output_bytes = remove_background(input_bytes)
+    output_bytes = await asyncio.to_thread(remove_background, input_bytes)
 
-    # Persist the result to disk (like every other image in this app) rather
-    # than only returning raw bytes for a browser-side blob: URL. Blob URLs
-    # live only in that tab's memory, so closing the lightbox / refreshing
-    # the page loses the edit. Saving it here and handing back a real
-    # /api/uploads/... URL means the frontend can attach it permanently to
-    # the product or image pool, same as any other image.
     ensure_dir(UPLOADS_DIR)
     dest_name = _safe_filename("bg-removed.png")
     dest_path = os.path.join(UPLOADS_DIR, dest_name)
@@ -63,7 +54,6 @@ async def remove_bg(file: UploadFile):
         out.write(output_bytes)
 
     return JSONResponse({"url": f"{BASE_UPLOADS_URL}/{dest_name}"})
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def _safe_filename(original_name: str) -> str:
