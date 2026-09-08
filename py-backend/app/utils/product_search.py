@@ -78,6 +78,20 @@ def _load_products_sync() -> list[dict[str, Any]]:
         return [serialize_row("Products", r) for r in rows]
 
 
+def _build_index_sync(docs: list[dict[str, Any]]):
+    """CPU-bound: sentence-transformer encoding + FAISS index build.
+    Runs on a worker thread via asyncio.to_thread — must not be awaited
+    directly, or it blocks the event loop for the whole encode+build time."""
+    model = get_model()
+    texts = [_combined_text(d) for d in docs]
+    vectors = model.encode(texts)
+    faiss.normalize_L2(vectors)
+
+    index = faiss.IndexFlatL2(EMBEDDING_DIM)
+    index.add(np.array(vectors).astype("float32"))
+    return index
+
+
 async def build_index() -> None:
     """Loads all brochure-extracted products from SQL Server and
     (re)builds the in-memory FAISS index. Safe to call more than once —
@@ -92,13 +106,7 @@ async def build_index() -> None:
         _index = None
         return
 
-    model = get_model()
-    texts = [_combined_text(d) for d in docs]
-    vectors = model.encode(texts)
-    faiss.normalize_L2(vectors)
-
-    index = faiss.IndexFlatL2(EMBEDDING_DIM)
-    index.add(np.array(vectors).astype("float32"))
+    index = await asyncio.to_thread(_build_index_sync, docs)
 
     _products = docs
     _index = index
