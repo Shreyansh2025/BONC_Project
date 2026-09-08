@@ -44,6 +44,11 @@ _products: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
 
 
+def index_status() -> dict[str, Any]:
+    """Snapshot of in-memory index state, for the /api/debug/index-status route."""
+    return {"count": len(_products), "index_built": _index is not None}
+
+
 def _combined_text(doc: dict[str, Any]) -> str:
     # Matches sync_db_to_ai.py's sync_products(): Product_Name + Description + KeyWords only.
     parts = [doc.get("productName", ""), doc.get("description", ""), doc.get("keyWords", "")]

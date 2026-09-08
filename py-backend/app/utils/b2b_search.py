@@ -43,6 +43,11 @@ _companies: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
 
 
+def index_status() -> dict[str, Any]:
+    """Snapshot of in-memory index state, for the /api/debug/index-status route."""
+    return {"count": len(_companies), "index_built": _index is not None}
+
+
 def _combined_text(doc: dict[str, Any]) -> str:
     parts = [
         doc.get("businessId", ""),

@@ -42,6 +42,11 @@ _products: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
 
 
+def index_status() -> dict[str, Any]:
+    """Snapshot of in-memory index state, for the /api/debug/index-status route."""
+    return {"count": len(_products), "index_built": _index is not None}
+
+
 def warm_up_model() -> None:
     """Loads the (shared) embedding model immediately — no-op if
     b2b_search / b2b_product_search already warmed it up."""
