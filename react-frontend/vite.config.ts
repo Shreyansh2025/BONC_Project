@@ -36,7 +36,7 @@ export default defineConfig({
       // '/api': 'http://localhost:8000',
 
       // CONTABO PRODUCTION BACKEND:
-      '/api': 'http://169.58.222.81:8000',
+      '/api': 'https://aiapi.boncnetwork.com',
     },
   },
   preview: { port, host: '0.0.0.0' },
