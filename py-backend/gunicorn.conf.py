@@ -26,7 +26,7 @@ bind = f"0.0.0.0:{port}"
 # ---------------------------------------------------------------------------
 # PDF processing + OCR + AI structuring can take 30-90s for large files.
 # 120s gives enough headroom without hanging forever.
-timeout = 120
+timeout = 900
 keepalive = 5
 
 # ---------------------------------------------------------------------------
