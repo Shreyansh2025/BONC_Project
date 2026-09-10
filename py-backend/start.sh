@@ -25,5 +25,5 @@ fi
 
 echo "[start.sh] Starting BrochureIQ API on port ${PORT:-8000} with ${WEB_CONCURRENCY:-2} worker(s)..."
 
-source /home/team/BONC_Project/py-backend/venv/bin/activate
-exec /home/team/BONC_Project/py-backend/venv/bin/gunicorn -c gunicorn.conf.py app.main:app
+source "$SCRIPT_DIR/venv/bin/activate"
+exec "$SCRIPT_DIR/venv/bin/gunicorn" -c gunicorn.conf.py app.main:app
