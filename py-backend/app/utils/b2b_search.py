@@ -73,12 +73,12 @@ _COMPANY_SQL = text(
         sub.SubCategoryName
     FROM Company c
     LEFT JOIN Industry i
-        ON i.IndustryId = c.IndustryId AND i.IsActive = 1 AND i.IsDeleted = 0
+        ON i.IndustryId = c.IndustryId AND i.IsActive = 1 AND ISNULL(i.IsDeleted, 0) = 0
     LEFT JOIN Category cat
-        ON cat.CategoryId = c.CategoryId AND cat.IsActive = 1 AND cat.IsDeleted = 0
+        ON cat.CategoryId = c.CategoryId AND cat.IsActive = 1 AND ISNULL(cat.IsDeleted, 0) = 0
     LEFT JOIN SubCategory sub
-        ON sub.SubCategoryId = c.SubCategoryId AND sub.IsActive = 1 AND sub.IsDeleted = 0
-    WHERE c.IsDeleted = 0 AND c.Status = 'Verified'
+        ON sub.SubCategoryId = c.SubCategoryId AND sub.IsActive = 1 AND ISNULL(sub.IsDeleted, 0) = 0
+    WHERE ISNULL(c.IsDeleted, 0) = 0 AND c.Status = 'Verified'
     """
 )
 

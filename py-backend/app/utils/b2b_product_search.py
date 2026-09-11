@@ -100,16 +100,16 @@ _PRODUCT_SQL = text(
         img.MediaPath AS ImagePath
     FROM ProductsAndServices p
     LEFT JOIN Industry i
-        ON i.IndustryId = p.IndustryId AND i.IsActive = 1 AND i.IsDeleted = 0
+        ON i.IndustryId = p.IndustryId AND i.IsActive = 1 AND ISNULL(i.IsDeleted, 0) = 0
     LEFT JOIN Category cat
-        ON cat.CategoryId = p.CategoryId AND cat.IsActive = 1 AND cat.IsDeleted = 0
+        ON cat.CategoryId = p.CategoryId AND cat.IsActive = 1 AND ISNULL(cat.IsDeleted, 0) = 0
     LEFT JOIN SubCategory sub
-        ON sub.SubCategoryId = p.SubCategoryId AND sub.IsActive = 1 AND sub.IsDeleted = 0
+        ON sub.SubCategoryId = p.SubCategoryId AND sub.IsActive = 1 AND ISNULL(sub.IsDeleted, 0) = 0
     LEFT JOIN Company c
         ON c.BusinessId = p.BusinessId
     LEFT JOIN RankedMedia img
         ON img.EntityTypeId = p.ProductsAndServicesId AND img.rn = 1
-    WHERE p.IsDeleted = 0 AND p.Status = 'Publish'
+    WHERE ISNULL(p.IsDeleted, 0) = 0 AND p.Status = 'Publish'
     """
 )
 
