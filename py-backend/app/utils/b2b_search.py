@@ -2,18 +2,26 @@
 B2B company search: exact match -> priority partial-word match -> AI
 (FAISS) fallback.
 
-Ported from the standalone Streamlit + MySQL "Bonc_Network" search engine.
-Company data now lives in SQL Server's B2BCompanies table (see
-app/db.py: b2b_companies_table) instead of MySQL's `companies_master`
-table, and the FAISS index is built in memory from that table instead of
-being loaded from a static `.bin` file whose row order was tied to
-MySQL's auto-increment id.
+CHANGED (staging): now reads directly from the company's own live
+`Company` table (joined with `Industry`, `Category`, `SubCategory` for
+human-readable names) instead of our own `B2BCompanies` import copy.
+This removes the staleness/slug/id gaps that came from the old CSV
+import (see import_b2b_companies.py, now unused by this file) and
+makes IndustryId/CategoryId/SubCategoryId and the real BusinessSlug
+available without any manual export step.
 
-The company set is small (~700 rows), so rather than translating every
-MySQL query into a SQL Server equivalent inline, the whole table is
-cached in memory as a plain list and the same three-layer scoring logic
-from the original `app.py` runs directly against that list. `build_index()`
-refreshes this cache; call it again after re-importing data.
+KNOWN GAP: `Company` has no City/State/Country/Address/Pincode/Landmark
+columns (confirmed against the live schema) even though the old CSV
+export did. Until we find out where (or if) that data lives on their
+side, city/state search silently has nothing to match against — this
+is not a bug in this file, it's missing source data. See the
+"exact_fields" / partial-match section below for where this shows up.
+
+Same caching strategy as before: the company set is small, so the
+whole result set is loaded into memory as a plain list and the same
+three-layer scoring logic runs directly against that list. build_index()
+refreshes this cache; the hourly auto-refresh loop in main.py calls it
+automatically, or call it manually after data changes.
 """
 
 from __future__ import annotations
@@ -25,12 +33,11 @@ from typing import Any
 
 import faiss
 import numpy as np
-from sqlalchemy import select, text
+from sqlalchemy import text
 
-from app.db import b2b_companies_table, get_engine
+from app.db import get_engine
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
-from app.utils.serialize import serialize_row
 
 STOP_WORDS = {
     "in", "at", "near", "and", "for", "the", "of", "to", "company",
@@ -43,46 +50,105 @@ _companies: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
 
 
+_COMPANY_SQL = text(
+    """
+    SELECT
+        c.BusinessId,
+        c.BusinessName,
+        c.BusinessSlug,
+        c.CategoryId,
+        c.IndustryId,
+        c.SubCategoryId,
+        c.BusinessDescription,
+        c.Tagline,
+        c.AboutBrief,
+        c.Description,
+        c.Vision,
+        c.WhyChooseUs,
+        c.WebsiteURL,
+        c.CompanyLogo,
+        c.Banner,
+        i.IndustryName,
+        cat.CategoryName,
+        sub.SubCategoryName
+    FROM Company c
+    LEFT JOIN Industry i
+        ON i.IndustryId = c.IndustryId AND i.IsActive = 1 AND i.IsDeleted = 0
+    LEFT JOIN Category cat
+        ON cat.CategoryId = c.CategoryId AND cat.IsActive = 1 AND cat.IsDeleted = 0
+    LEFT JOIN SubCategory sub
+        ON sub.SubCategoryId = c.SubCategoryId AND sub.IsActive = 1 AND sub.IsDeleted = 0
+    WHERE c.IsDeleted = 0 AND c.Status = 'Verified'
+    """
+)
+
+
+def _s(value: Any) -> str | None:
+    """SQL Server `uniqueidentifier` columns come back as uuid.UUID objects,
+    not strings — this stringifies them (and passes through None) so every
+    id field is JSON-safe without special-casing it at every call site."""
+    return str(value) if value is not None else None
+
+
 def index_status() -> dict[str, Any]:
     """Snapshot of in-memory index state, for the /api/debug/index-status route."""
     return {"count": len(_companies), "index_built": _index is not None}
 
 
 def _combined_text(doc: dict[str, Any]) -> str:
+    # NOTE: city/state/address fields removed here vs. the old CSV-backed
+    # version — Company has no such columns. industryName/categoryName/
+    # subCategoryName added in their place since those are now real data
+    # (previously categoryId was jammed into this as a bare id, which
+    # couldn't ever match a text search word anyway).
     parts = [
-        doc.get("businessId", ""),
         doc.get("businessName", ""),
-        doc.get("categoryId", ""),
         doc.get("businessSlug", ""),
+        doc.get("industryName", ""),
+        doc.get("categoryName", ""),
+        doc.get("subCategoryName", ""),
         doc.get("businessDescription", ""),
         doc.get("tagline", ""),
         doc.get("aboutBrief", ""),
         doc.get("description", ""),
         doc.get("vision", ""),
         doc.get("whyChooseUs", ""),
-        doc.get("address1", ""),
-        doc.get("city", ""),
-        doc.get("state", ""),
-        doc.get("country", ""),
-        doc.get("pincode", ""),
-        doc.get("landmark", ""),
     ]
     return " ".join(str(p) for p in parts if p).strip().lower()
 
 
 def _load_companies_sync() -> list[dict[str, Any]]:
-    """B2BCompanies has no verification-status column of its own — that
-    only exists on the company's live `Company` table, in the same
-    database. Join live so we don't need a re-import to pick up
-    verification changes."""
     with get_engine().connect() as conn:
-        rows = conn.execute(text("""
-            SELECT b.*
-            FROM B2BCompanies b
-            JOIN Company c ON c.BusinessId = b.BusinessId
-            WHERE c.status = 'Verified'
-        """)).mappings().all()
-        return [serialize_row("B2BCompanies", r) for r in rows]
+        rows = conn.execute(_COMPANY_SQL).mappings().all()
+
+    docs: list[dict[str, Any]] = []
+    for r in rows:
+        docs.append(
+            {
+                "businessId": _s(r["BusinessId"]),
+                "businessName": r["BusinessName"],
+                "businessSlug": r["BusinessSlug"],
+                "categoryId": _s(r["CategoryId"]),
+                "industryId": _s(r["IndustryId"]),
+                "subCategoryId": _s(r["SubCategoryId"]),
+                "categoryName": r["CategoryName"],
+                "industryName": r["IndustryName"],
+                "subCategoryName": r["SubCategoryName"],
+                "businessDescription": r["BusinessDescription"],
+                "tagline": r["Tagline"],
+                "aboutBrief": r["AboutBrief"],
+                "description": r["Description"],
+                "vision": r["Vision"],
+                "whyChooseUs": r["WhyChooseUs"],
+                "websiteUrl": r["WebsiteURL"],
+                # Company has CompanyLogo/Banner directly on the row — no
+                # Media table join needed here (unlike products, see
+                # b2b_product_search.py). Logo preferred, banner as fallback.
+                "imagePath": r["CompanyLogo"] or r["Banner"],
+            }
+        )
+    return docs
+
 
 def _build_index_sync(docs: list[dict[str, Any]]):
     """CPU-bound: sentence-transformer encoding + FAISS index build.
@@ -99,14 +165,16 @@ def _build_index_sync(docs: list[dict[str, Any]]):
 
 
 async def build_index() -> None:
-    """Loads all companies from SQL Server and (re)builds the in-memory
-    FAISS index. Safe to call more than once — e.g. after re-running the
-    import script — to pick up fresh data without restarting the server."""
+    """Loads all Verified companies from the live Company table and
+    (re)builds the in-memory FAISS index. Called once at startup and then
+    every hour by main.py's auto-refresh loop — each call does a full read
+    of Company + Industry + Category + SubCategory, so keep that in mind
+    if refresh frequency ever needs to change for load reasons."""
     global _companies, _index
 
     docs = await asyncio.to_thread(_load_companies_sync)
     if not docs:
-        logger.info("No B2B company rows found — search index left empty")
+        logger.info("No Verified companies found — search index left empty")
         _companies = []
         _index = None
         return
@@ -151,8 +219,10 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     if not search_term or not _companies:
         return []
 
-    # Layer 1: exact match (full phrase) against name / slug / city / state
-    exact_fields = ["businessName", "businessSlug", "city", "state"]
+    # Layer 1: exact match (full phrase) against name / slug / industry /
+    # category. city/state removed here — see module docstring, Company
+    # has no address columns to match against.
+    exact_fields = ["businessName", "businessSlug", "industryName", "categoryName"]
     exact_results = []
     for doc in _companies:
         if _contains_term(doc, search_term, exact_fields):
@@ -161,8 +231,8 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             row["matchPercentage"] = 100.0
             matched = (
                 _get_matching_words(search_term, row.get("businessName", ""))
-                or _get_matching_words(search_term, row.get("city", ""))
-                or _get_matching_words(search_term, row.get("state", ""))
+                or _get_matching_words(search_term, row.get("categoryName", ""))
+                or _get_matching_words(search_term, row.get("industryName", ""))
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
@@ -183,19 +253,20 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             if b_name in seen_names:
                 continue
 
-            city_name = str(doc.get("city", "")).lower()
+            # NOTE: was city_name before; no city data available now (see
+            # module docstring). industry_name/category_name fill the same
+            # "tier 3" scoring slot city used to occupy.
+            cat_text = str(doc.get("categoryName", "")).lower()
+            industry_text = str(doc.get("industryName", "")).lower()
             desc_text = str(doc.get("description", "")).lower()
-            cat_text = str(doc.get("categoryId", "")).lower()
 
             match_score = 0.0
             if word in b_name.lower():
                 match_score = 90.0 - position_penalty
-            elif word in cat_text:
+            elif word in cat_text or word in industry_text:
                 match_score = 85.0 - position_penalty
             elif word in desc_text:
                 match_score = 80.0 - position_penalty
-            elif word in city_name:
-                match_score = 75.0 - position_penalty
 
             if word_index == 0 and match_score > 0:
                 match_score = min(99.0, match_score + 10.0)

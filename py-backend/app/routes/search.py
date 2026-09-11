@@ -38,9 +38,29 @@ def _shape_product(row: dict[str, Any]) -> dict[str, Any]:
     if "matchPercentage" not in row or row["matchPercentage"] is None:
         row["matchPercentage"] = 100.0 if row.get("productName") else 50.0
 
+    # B2B catalog rows (have "productsAndServicesId" — set in
+    # b2b_product_search.py) now come straight from the company's live
+    # ProductsAndServices.Slug, which is always populated for a
+    # Publish-status row and is THEIR real, permanent slug — we must not
+    # regenerate it, since ours would never match the one their frontend
+    # actually links to. If it's ever unexpectedly empty, that's a data
+    # problem on their side worth knowing about, not something to silently
+    # paper over here.
+    #
+    # Local brochure-extracted rows (from product_search.py / our own
+    # Products table) still get the slugify() fallback — those are
+    # user-uploaded items the company never assigns a slug to, so
+    # generating one ourselves is the only option, same as at write-time
+    # in models.py's ProductCreate.to_row().
     slug = (row.get("slug") or "").strip()
     if not slug:
-        slug = slugify(row.get("productName"), fallback=str(row.get("_id", "")))
+        if "productsAndServicesId" in row:
+            logger.warning(
+                f"B2B product {row.get('productsAndServicesId')} "
+                f"({row.get('productName')!r}) has no Slug set upstream"
+            )
+        else:
+            slug = slugify(row.get("productName"), fallback=str(row.get("_id", "")))
     row["slug"] = slug
     return row
 
