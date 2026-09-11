@@ -25,7 +25,7 @@ from typing import Any
 
 import faiss
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.db import b2b_companies_table, get_engine
 from app.logger import logger
@@ -71,10 +71,18 @@ def _combined_text(doc: dict[str, Any]) -> str:
 
 
 def _load_companies_sync() -> list[dict[str, Any]]:
+    """B2BCompanies has no verification-status column of its own — that
+    only exists on the company's live `Company` table, in the same
+    database. Join live so we don't need a re-import to pick up
+    verification changes."""
     with get_engine().connect() as conn:
-        rows = conn.execute(select(b2b_companies_table())).mappings().all()
+        rows = conn.execute(text("""
+            SELECT b.*
+            FROM B2BCompanies b
+            JOIN Company c ON c.BusinessId = b.BusinessId
+            WHERE c.status = 'Verified'
+        """)).mappings().all()
         return [serialize_row("B2BCompanies", r) for r in rows]
-
 
 def _build_index_sync(docs: list[dict[str, Any]]):
     """CPU-bound: sentence-transformer encoding + FAISS index build.

@@ -57,9 +57,11 @@ def _combined_text(doc: dict[str, Any]) -> str:
 
 def _load_products_sync() -> list[dict[str, Any]]:
     with get_engine().connect() as conn:
-        rows = conn.execute(select(b2b_products_table())).mappings().all()
+        table = b2b_products_table()
+        rows = conn.execute(
+            select(table).where(table.c.Status == "Publish")
+        ).mappings().all()
         return [serialize_row("B2BProducts", r) for r in rows]
-
 
 def _build_index_sync(docs: list[dict[str, Any]]):
     """CPU-bound: sentence-transformer encoding + FAISS index build.
