@@ -299,7 +299,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
         distance_score = distances[0][i]
         cosine_sim = 1 - (distance_score / 2)
         percentage = max(0.0, round(cosine_sim * 100, 2))
-        if percentage < 10.0:
+        if percentage < 35.0:
             continue
 
         doc = _companies[int(idx)]
