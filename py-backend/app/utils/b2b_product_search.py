@@ -20,9 +20,14 @@ the company's convention is actually "most recent" or something else,
 flip ORDER BY m1.CreatedOn ASC to DESC in _PRODUCT_SQL below — that's the
 only place this decision lives.
 
-Faithfully keeps one quirk from the original tool: exact/partial match is
-name-only for products (unlike companies, which check several fields) —
-see search_products_sync below.
+CHANGED (staging, fix): exact/partial match now also checks categoryName/
+subCategoryName/industryName, not just productName. The original tool's
+name-only behavior meant a query like "furniture" — which matches no
+literal product name ("Bunker Bed", "Office Chair", etc.) but does match
+the category — skipped straight to the AI/FAISS fallback layer and came
+back fuzzy/wrong. This mirrors how b2b_search.py already treats
+companies (checks name + slug + industry + category), which is why
+company search didn't have this problem.
 
 Same caching strategy as before: results are loaded into memory as a
 plain list and the same three-layer scoring logic runs directly against
@@ -249,6 +254,10 @@ def _get_closest_word(query: str, target_text: Any) -> str:
     return " ".join(str(target_text).split()[:2]).title()
 
 
+def _contains_term(doc: dict[str, Any], term: str, fields: list[str]) -> bool:
+    return any(term in str(doc.get(f, "")).lower() for f in fields)
+
+
 def search_products_sync(query: str) -> list[dict[str, Any]]:
     """Exact -> partial -> AI-fallback search over the in-memory product
     cache. CPU-bound — call via asyncio.to_thread from the route."""
@@ -256,23 +265,30 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
     if not search_term or not _products:
         return []
 
-    # Layer 1: exact match on product name only (matches original tool's
-    # behavior: products only ever matched on Product_Name, unlike
-    # companies which checked several fields — kept for parity).
+    # Layer 1: exact match against name / category / subCategory / industry
+    # (was name-only — see module docstring "CHANGED (staging, fix)").
+    exact_fields = ["productName", "categoryName", "subCategoryName", "industryName"]
     exact_results = []
     for doc in _products:
-        if search_term in str(doc.get("productName", "")).lower():
+        if _contains_term(doc, search_term, exact_fields):
             row = dict(doc)
             row["matchType"] = "Exact Match"
             row["matchPercentage"] = 100.0
-            row["matchedKeyword"] = _get_matching_words(search_term, row.get("productName", "")) or search_term.title()
+            matched = (
+                _get_matching_words(search_term, row.get("productName", ""))
+                or _get_matching_words(search_term, row.get("categoryName", ""))
+                or _get_matching_words(search_term, row.get("subCategoryName", ""))
+                or _get_matching_words(search_term, row.get("industryName", ""))
+            )
+            row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
 
     if exact_results:
         return sorted(exact_results, key=lambda r: r["matchPercentage"], reverse=True)
 
-    # Layer 1.5: partial word match — candidates are name-matches only,
-    # same as the original.
+    # Layer 1.5: partial word match, weighted by which field it hit
+    # (name > category/subCategory/industry > description) — was
+    # name-only, see module docstring.
     words = [w for w in search_term.split() if len(w) > 2 and w not in STOP_WORDS]
     seen_names: set[str] = set()
     partial_results: list[dict[str, Any]] = []
@@ -283,11 +299,21 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             p_name = str(doc.get("productName", ""))
             if p_name in seen_names:
                 continue
-            if word not in p_name.lower():
-                continue
 
-            match_score = 90.0 - position_penalty
-            if word_index == 0:
+            cat_text = str(doc.get("categoryName", "")).lower()
+            sub_text = str(doc.get("subCategoryName", "")).lower()
+            industry_text = str(doc.get("industryName", "")).lower()
+            desc_text = str(doc.get("description", "")).lower()
+
+            match_score = 0.0
+            if word in p_name.lower():
+                match_score = 90.0 - position_penalty
+            elif word in cat_text or word in sub_text or word in industry_text:
+                match_score = 85.0 - position_penalty
+            elif word in desc_text:
+                match_score = 80.0 - position_penalty
+
+            if word_index == 0 and match_score > 0:
                 match_score = min(99.0, match_score + 10.0)
 
             if match_score >= 10.0:
