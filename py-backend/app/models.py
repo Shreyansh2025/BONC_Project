@@ -63,7 +63,6 @@ class ProductCreate(BaseModel):
     specifications: dict[str, Any] = Field(default_factory=dict)
     images: list[str] = Field(default_factory=list, max_length=5)
     sourceFileName: str = ""
-    slug: str | None = None
     imagePath: str | None = None
 
     def to_row(self) -> dict[str, Any]:
@@ -79,10 +78,6 @@ class ProductCreate(BaseModel):
         if not resolved_image_path and self.images:
             resolved_image_path = self.images[0]
 
-        resolved_slug = self.slug
-        if not resolved_slug:
-            resolved_slug = slugify(self.productName)
-
         row = {
             "ProductName": self.productName,
             "Category": self.category,
@@ -94,8 +89,11 @@ class ProductCreate(BaseModel):
             "Images": json_col(self.images),
             "SourceFileName": self.sourceFileName,
             "CreatedDate": datetime.now(timezone.utc),
-            "Slug": resolved_slug,
             "ImagePath": resolved_image_path,     # Automatically populated!
+            # No Slug written here anymore — extracted products live only in
+            # our own Products table (never published to the main site's
+            # catalog), so they're routed by numeric Id, not a slug. See
+            # routes/search.py and the frontend's /products/:idOrSlug route.
         }
         return row
 
@@ -109,14 +107,11 @@ class UpdateProductImages(BaseModel):
     images: list[str] = Field(default_factory=list, max_length=5)
 
 
-# ─── Slug helper ─────────────────────────────────────────────────────────
-# Products imported from the B2B catalog may not have a Slug column value
-# (older rows, or rows imported before the column existed). Rather than
-# failing to link to them, the search route falls back to generating one
-# on the fly from the product name — e.g. "Heavy Duty Tractor #2" ->
-# "heavy-duty-tractor-2". This is intentionally simple regex-based slugging
-# (no external deps), and is NOT persisted back to the database — it's a
-# read-time fallback only.
+# ─── Slugify helper ─────────────────────────────────────────────────────
+# NOTE: this is no longer used to generate URL slugs (see ProductCreate.to_row
+# above — the Slug column is never written for extracted products anymore).
+# It's kept only as the fallback for the Model field when a product has no
+# model number, e.g. "Heavy Duty Tractor #2" -> "heavy-duty-tractor-2".
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 
 

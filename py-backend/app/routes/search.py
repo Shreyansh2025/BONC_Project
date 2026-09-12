@@ -6,7 +6,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.logger import logger
-from app.models import slugify
 from app.utils import b2b_product_search, b2b_search
 from app.utils.product_search import search_products_sync as search_local_products_sync
 
@@ -39,7 +38,7 @@ def _shape_product(row: dict[str, Any]) -> dict[str, Any]:
         row["matchPercentage"] = 100.0 if row.get("productName") else 50.0
 
     # B2B catalog rows (have "productsAndServicesId" — set in
-    # b2b_product_search.py) now come straight from the company's live
+    # b2b_product_search.py) come straight from the company's live
     # ProductsAndServices.Slug, which is always populated for a
     # Publish-status row and is THEIR real, permanent slug — we must not
     # regenerate it, since ours would never match the one their frontend
@@ -48,19 +47,15 @@ def _shape_product(row: dict[str, Any]) -> dict[str, Any]:
     # paper over here.
     #
     # Local brochure-extracted rows (from product_search.py / our own
-    # Products table) still get the slugify() fallback — those are
-    # user-uploaded items the company never assigns a slug to, so
-    # generating one ourselves is the only option, same as at write-time
-    # in models.py's ProductCreate.to_row().
+    # Products table) never get a slug — they aren't published to the main
+    # site's catalog, so there's no "real" slug to have. The frontend links
+    # to these by numeric id instead (see product-detail.tsx / search.tsx).
     slug = (row.get("slug") or "").strip()
-    if not slug:
-        if "productsAndServicesId" in row:
-            logger.warning(
-                f"B2B product {row.get('productsAndServicesId')} "
-                f"({row.get('productName')!r}) has no Slug set upstream"
-            )
-        else:
-            slug = slugify(row.get("productName"), fallback=str(row.get("_id", "")))
+    if not slug and "productsAndServicesId" in row:
+        logger.warning(
+            f"B2B product {row.get('productsAndServicesId')} "
+            f"({row.get('productName')!r}) has no Slug set upstream"
+        )
     row["slug"] = slug
     return row
 
