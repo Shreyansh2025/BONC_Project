@@ -98,8 +98,11 @@ async def search_unified(body: SearchRequest):
         combined: list[dict[str, Any]] = []
 
         if body.Type in ("business", "all"):
-            company_rows = await asyncio.to_thread(b2b_search.search_companies_sync, q)
-            combined.extend(_shape_company(r) for r in company_rows)
+            try:
+                company_rows = await asyncio.to_thread(b2b_search.search_companies_sync, q)
+                combined.extend(_shape_company(r) for r in company_rows)
+            except Exception as b2b_company_err:
+                logger.error(f"B2B company search failed: {b2b_company_err}")
 
         if body.Type in ("product", "all"):
             # 1. Real B2B catalog products
