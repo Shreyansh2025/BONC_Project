@@ -2,13 +2,27 @@
 B2B product catalog search: exact match -> priority partial-word match ->
 AI (FAISS) fallback.
 
-CHANGED (staging): now reads directly from the company's own live
-`ProductsAndServices` table (joined with `Company`, `Industry`,
-`Category`, `SubCategory`, and `Media`) instead of our own `B2BProducts`
-import copy. This is what fixes the slug bug (real ProductsAndServices.Slug
-is now used as-is — see routes/search.py for the matching slugify()
-removal) and adds real IndustryId/CategoryId/ProductsAndServicesId, none
-of which were ever present in the old xlsx import.
+Reads directly from the company's own live `ProductsAndServices` table,
+joined with:
+  - Industry / Category / SubCategory  -> human-readable names.
+  - Company                            -> business name + slug.
+  - Media                              -> product images (see RankedMedia
+    below; ProductsAndServices has no image column of its own).
+  - AddressDetails                     -> the product's business's City/
+    State/Country/Pincode/Latitude/Longitude, joined via the same
+    BusinessId used for the Company join (a product has no address of
+    its own, it inherits its business's location). Confirmed:
+    EntityType='Company', EntityTypeId=Company.BusinessId, one row per
+    business (no multi-address handling needed).
+  - BusinessType                       -> matches "IndustryType" seen in
+    the company's own live search response ("Manufacturer"/"Distributor").
+  - BoncUser                           -> UserSlug, via Company.UserRowId.
+
+This closes the location gap (was previously undiscovered — the address
+data was never missing from their system, just not in Company/
+ProductsAndServices themselves) plus IndustryType/UserSlug/
+ProductUniqueId/CreatedOn/IsAllowRfqRfiFromBusiness, all seen in the
+company's own /api/commonService search response but missing here before.
 
 Image handling: ProductsAndServices has no image column of its own — a
 product's images live in the shared `Media` table, linked by
@@ -66,6 +80,7 @@ _PRODUCT_SQL = text(
     )
     SELECT
         p.ProductsAndServicesId,
+        p.ProductsAndServicesUniqueId,
         p.ProductsAndServicesName,
         p.ItemType,
         p.ProductType,
@@ -87,6 +102,7 @@ _PRODUCT_SQL = text(
         p.MaxPrice,
         p.Status,
         p.PublishDate,
+        p.CreatedOn,
         p.Slug,
         p.CategoryId,
         p.IndustryId,
@@ -97,6 +113,15 @@ _PRODUCT_SQL = text(
         sub.SubCategoryName,
         c.BusinessName,
         c.BusinessSlug,
+        c.IsAllowRfqRfiFromBusiness,
+        bt.BusinessTypeName,
+        addr.City,
+        addr.State,
+        addr.Country,
+        addr.Pincode,
+        addr.Latitude,
+        addr.Longitude,
+        u.Slug AS UserSlug,
         img.MediaPath AS ImagePath
     FROM ProductsAndServices p
     LEFT JOIN Industry i
@@ -107,6 +132,12 @@ _PRODUCT_SQL = text(
         ON sub.SubCategoryId = p.SubCategoryId AND sub.IsActive = 1 AND ISNULL(sub.IsDeleted, 0) = 0
     LEFT JOIN Company c
         ON c.BusinessId = p.BusinessId
+    LEFT JOIN BusinessType bt
+        ON bt.BusinessTypeId = c.BusinessTypeId
+    LEFT JOIN AddressDetails addr
+        ON addr.EntityTypeId = p.BusinessId AND addr.EntityType = 'Company'
+    LEFT JOIN BoncUser u
+        ON u.UserRowId = c.UserRowId AND ISNULL(u.IsDeleted, 0) = 0
     LEFT JOIN RankedMedia img
         ON img.EntityTypeId = p.ProductsAndServicesId AND img.rn = 1
     WHERE ISNULL(p.IsDeleted, 0) = 0 AND p.Status = 'Publish'
@@ -126,10 +157,9 @@ def index_status() -> dict[str, Any]:
 
 
 def _combined_text(doc: dict[str, Any]) -> str:
-    # Extended vs. the old xlsx-backed version (which only had name +
-    # description + keyWords) — brandName/categoryName/industryName are
-    # now real joined data, so folding them in makes the AI-fallback
-    # layer meaningfully better, not just parity with the old tool.
+    # City/state added now that AddressDetails is joined (via the
+    # product's business) — a query like "chair in bangalore" previously
+    # had nothing to match "bangalore" against at all; now it does.
     parts = [
         doc.get("productName", ""),
         doc.get("description", ""),
@@ -137,6 +167,8 @@ def _combined_text(doc: dict[str, Any]) -> str:
         doc.get("brandName", ""),
         doc.get("categoryName", ""),
         doc.get("industryName", ""),
+        doc.get("city", ""),
+        doc.get("state", ""),
     ]
     return " ".join(str(p) for p in parts if p).strip().lower()
 
@@ -150,6 +182,7 @@ def _load_products_sync() -> list[dict[str, Any]]:
         docs.append(
             {
                 "productsAndServicesId": _s(r["ProductsAndServicesId"]),
+                "productUniqueId": r["ProductsAndServicesUniqueId"],
                 "productName": r["ProductsAndServicesName"],
                 "itemType": r["ItemType"],
                 "productType": r["ProductType"],
@@ -171,10 +204,9 @@ def _load_products_sync() -> list[dict[str, Any]]:
                 "maxPrice": float(r["MaxPrice"]) if r["MaxPrice"] is not None else None,
                 "status": r["Status"],
                 "publishDate": r["PublishDate"].isoformat() if r["PublishDate"] else None,
+                "createdOn": r["CreatedOn"].isoformat() if r["CreatedOn"] else None,
                 # Real slug straight from ProductsAndServices — no slugify()
-                # fallback needed anymore, this is always populated for any
-                # Publish-status row. See routes/search.py for the matching
-                # removal of the slugify() fallback on the read side.
+                # fallback, always populated for a Publish-status row.
                 "slug": r["Slug"],
                 "categoryId": _s(r["CategoryId"]),
                 "industryId": _s(r["IndustryId"]),
@@ -185,7 +217,17 @@ def _load_products_sync() -> list[dict[str, Any]]:
                 "subCategoryName": r["SubCategoryName"],
                 "businessName": r["BusinessName"],
                 "businessSlug": r["BusinessSlug"],
+                "isAllowRfqRfiFromBusiness": r["IsAllowRfqRfiFromBusiness"],
+                "businessTypeName": r["BusinessTypeName"],
+                "userSlug": r["UserSlug"],
                 "imagePath": r["ImagePath"],
+                # AddressDetails join, via the product's business.
+                "city": r["City"],
+                "state": r["State"],
+                "country": r["Country"],
+                "pincode": r["Pincode"],
+                "latitude": r["Latitude"],
+                "longitude": r["Longitude"],
             }
         )
     return docs
@@ -210,8 +252,9 @@ async def build_index() -> None:
     and (re)builds the in-memory FAISS index. Called once at startup and
     then every hour by main.py's auto-refresh loop — each call does a full
     read of ProductsAndServices + Industry + Category + SubCategory +
-    Company + Media, so keep that in mind if refresh frequency ever needs
-    to change for load reasons."""
+    Company + BusinessType + AddressDetails + BoncUser + Media, so keep
+    that in mind if refresh frequency ever needs to change for load
+    reasons."""
     global _products, _index
 
     docs = await asyncio.to_thread(_load_products_sync)
@@ -272,7 +315,11 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
         return sorted(exact_results, key=lambda r: r["matchPercentage"], reverse=True)
 
     # Layer 1.5: partial word match — candidates are name-matches only,
-    # same as the original.
+    # same as the original. City is intentionally NOT added as its own
+    # scoring branch here (unlike companies) to keep the "name-only"
+    # quirk intact for products — city now only influences the AI layer
+    # via _combined_text. Revisit if product search should also weight
+    # city explicitly like company search does.
     words = [w for w in search_term.split() if len(w) > 2 and w not in STOP_WORDS]
     seen_names: set[str] = set()
     partial_results: list[dict[str, Any]] = []

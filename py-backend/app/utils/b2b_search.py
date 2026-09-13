@@ -2,23 +2,28 @@
 B2B company search: exact match -> priority partial-word match -> AI
 (FAISS) fallback.
 
-CHANGED (staging): now reads directly from the company's own live
-`Company` table (joined with `Industry`, `Category`, `SubCategory` for
-human-readable names) instead of our own `B2BCompanies` import copy.
-This removes the staleness/slug/id gaps that came from the old CSV
-import (see import_b2b_companies.py, now unused by this file) and
-makes IndustryId/CategoryId/SubCategoryId and the real BusinessSlug
-available without any manual export step.
+Reads directly from the company's own live `Company` table, joined with:
+  - Industry / Category / SubCategory  -> human-readable names for
+    Company.IndustryId / CategoryId / SubCategoryId (bare GUIDs otherwise).
+  - AddressDetails                     -> City/State/Country/Pincode/
+    Latitude/Longitude. Confirmed: EntityType='Company', EntityTypeId=
+    Company.BusinessId, and confirmed no business has more than one
+    address row, so this is a plain one-to-one join, no "pick one" logic
+    needed (unlike the Media join in b2b_product_search.py).
+  - BusinessType                       -> Company.BusinessTypeId's real
+    name (e.g. "Manufacturer"/"Distributor" — matches "IndustryType" in
+    the company's own /api/commonService search response).
+  - BoncUser                           -> the account that owns the
+    listing, via Company.UserRowId, for UserSlug.
 
-KNOWN GAP: `Company` has no City/State/Country/Address/Pincode/Landmark
-columns (confirmed against the live schema) even though the old CSV
-export did. Until we find out where (or if) that data lives on their
-side, city/state search silently has nothing to match against — this
-is not a bug in this file, it's missing source data. See the
-"exact_fields" / partial-match section below for where this shows up.
+This closes the location gap that existed since the start of this
+migration (Company itself has no address columns — the data was always
+in AddressDetails, a separate table, not missing entirely) plus two
+fields (IndustryType, UserSlug) seen in the company's own search API
+response that weren't available here before.
 
-Same caching strategy as before: the company set is small, so the
-whole result set is loaded into memory as a plain list and the same
+Same caching strategy as before: the company set is small, so the whole
+result set is loaded into memory as a plain list and the same
 three-layer scoring logic runs directly against that list. build_index()
 refreshes this cache; the hourly auto-refresh loop in main.py calls it
 automatically, or call it manually after data changes.
@@ -68,9 +73,19 @@ _COMPANY_SQL = text(
         c.WebsiteURL,
         c.CompanyLogo,
         c.Banner,
+        c.CompanyUniqueId,
+        c.IsAllowRfqRfiFromBusiness,
         i.IndustryName,
         cat.CategoryName,
-        sub.SubCategoryName
+        sub.SubCategoryName,
+        bt.BusinessTypeName,
+        addr.City,
+        addr.State,
+        addr.Country,
+        addr.Pincode,
+        addr.Latitude,
+        addr.Longitude,
+        u.Slug AS UserSlug
     FROM Company c
     LEFT JOIN Industry i
         ON i.IndustryId = c.IndustryId AND i.IsActive = 1 AND ISNULL(i.IsDeleted, 0) = 0
@@ -78,6 +93,12 @@ _COMPANY_SQL = text(
         ON cat.CategoryId = c.CategoryId AND cat.IsActive = 1 AND ISNULL(cat.IsDeleted, 0) = 0
     LEFT JOIN SubCategory sub
         ON sub.SubCategoryId = c.SubCategoryId AND sub.IsActive = 1 AND ISNULL(sub.IsDeleted, 0) = 0
+    LEFT JOIN BusinessType bt
+        ON bt.BusinessTypeId = c.BusinessTypeId
+    LEFT JOIN AddressDetails addr
+        ON addr.EntityTypeId = c.BusinessId AND addr.EntityType = 'Company'
+    LEFT JOIN BoncUser u
+        ON u.UserRowId = c.UserRowId AND ISNULL(u.IsDeleted, 0) = 0
     WHERE ISNULL(c.IsDeleted, 0) = 0 AND c.Status = 'Verified'
     """
 )
@@ -96,17 +117,20 @@ def index_status() -> dict[str, Any]:
 
 
 def _combined_text(doc: dict[str, Any]) -> str:
-    # NOTE: city/state/address fields removed here vs. the old CSV-backed
-    # version — Company has no such columns. industryName/categoryName/
-    # subCategoryName added in their place since those are now real data
-    # (previously categoryId was jammed into this as a bare id, which
-    # couldn't ever match a text search word anyway).
+    # City/state are back in the searchable text now that AddressDetails
+    # is joined — this was previously a known, documented gap (Company
+    # itself has no address columns; the data lives in AddressDetails,
+    # found later). businessTypeName added too, matching the "IndustryType"
+    # field seen in the company's own live search response.
     parts = [
         doc.get("businessName", ""),
         doc.get("businessSlug", ""),
         doc.get("industryName", ""),
         doc.get("categoryName", ""),
         doc.get("subCategoryName", ""),
+        doc.get("businessTypeName", ""),
+        doc.get("city", ""),
+        doc.get("state", ""),
         doc.get("businessDescription", ""),
         doc.get("tagline", ""),
         doc.get("aboutBrief", ""),
@@ -134,6 +158,7 @@ def _load_companies_sync() -> list[dict[str, Any]]:
                 "categoryName": r["CategoryName"],
                 "industryName": r["IndustryName"],
                 "subCategoryName": r["SubCategoryName"],
+                "businessTypeName": r["BusinessTypeName"],
                 "businessDescription": r["BusinessDescription"],
                 "tagline": r["Tagline"],
                 "aboutBrief": r["AboutBrief"],
@@ -141,10 +166,20 @@ def _load_companies_sync() -> list[dict[str, Any]]:
                 "vision": r["Vision"],
                 "whyChooseUs": r["WhyChooseUs"],
                 "websiteUrl": r["WebsiteURL"],
+                "companyUniqueId": r["CompanyUniqueId"],
+                "isAllowRfqRfiFromBusiness": r["IsAllowRfqRfiFromBusiness"],
+                "userSlug": r["UserSlug"],
                 # Company has CompanyLogo/Banner directly on the row — no
-                # Media table join needed here (unlike products, see
-                # b2b_product_search.py). Logo preferred, banner as fallback.
+                # Media table join needed here (unlike products).
                 "imagePath": r["CompanyLogo"] or r["Banner"],
+                # AddressDetails join — city/state real now, lat/long kept
+                # as strings (source columns are nvarchar, not decimal).
+                "city": r["City"],
+                "state": r["State"],
+                "country": r["Country"],
+                "pincode": r["Pincode"],
+                "latitude": r["Latitude"],
+                "longitude": r["Longitude"],
             }
         )
     return docs
@@ -168,8 +203,9 @@ async def build_index() -> None:
     """Loads all Verified companies from the live Company table and
     (re)builds the in-memory FAISS index. Called once at startup and then
     every hour by main.py's auto-refresh loop — each call does a full read
-    of Company + Industry + Category + SubCategory, so keep that in mind
-    if refresh frequency ever needs to change for load reasons."""
+    of Company + Industry + Category + SubCategory + BusinessType +
+    AddressDetails + BoncUser, so keep that in mind if refresh frequency
+    ever needs to change for load reasons."""
     global _companies, _index
 
     docs = await asyncio.to_thread(_load_companies_sync)
@@ -220,9 +256,10 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
         return []
 
     # Layer 1: exact match (full phrase) against name / slug / industry /
-    # category. city/state removed here — see module docstring, Company
-    # has no address columns to match against.
-    exact_fields = ["businessName", "businessSlug", "industryName", "categoryName"]
+    # category / city. City is back in this list now that AddressDetails
+    # is joined — was removed here earlier when Company alone had no
+    # address columns to check.
+    exact_fields = ["businessName", "businessSlug", "industryName", "categoryName", "city"]
     exact_results = []
     for doc in _companies:
         if _contains_term(doc, search_term, exact_fields):
@@ -233,6 +270,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 _get_matching_words(search_term, row.get("businessName", ""))
                 or _get_matching_words(search_term, row.get("categoryName", ""))
                 or _get_matching_words(search_term, row.get("industryName", ""))
+                or _get_matching_words(search_term, row.get("city", ""))
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
@@ -253,9 +291,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             if b_name in seen_names:
                 continue
 
-            # NOTE: was city_name before; no city data available now (see
-            # module docstring). industry_name/category_name fill the same
-            # "tier 3" scoring slot city used to occupy.
+            city_text = str(doc.get("city", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
             desc_text = str(doc.get("description", "")).lower()
@@ -263,6 +299,12 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             match_score = 0.0
             if word in b_name.lower():
                 match_score = 90.0 - position_penalty
+            elif word in city_text:
+                # City match ranked just under name match — a location
+                # word ("bangalore") should narrow results, not just add
+                # noise to the AI embedding the way it did before this
+                # join existed.
+                match_score = 87.0 - position_penalty
             elif word in cat_text or word in industry_text:
                 match_score = 85.0 - position_penalty
             elif word in desc_text:
