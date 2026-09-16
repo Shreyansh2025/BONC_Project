@@ -19,8 +19,7 @@ into memory once.
 from __future__ import annotations
 
 import asyncio
-import difflib
-import re
+from collections import Counter
 from typing import Any
 
 import faiss
@@ -31,6 +30,14 @@ from app.db import get_engine, products_table
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
 from app.utils.serialize import serialize_row
+from app.utils.search_common import (
+    build_vocabulary,
+    clean_term,
+    contains_loose,
+    correct_query,
+    get_closest_word,
+    get_matching_words,
+)
 
 STOP_WORDS = {
     "in", "at", "near", "and", "for", "the", "of", "to", "company",
@@ -40,6 +47,9 @@ STOP_WORDS = {
 # Ordered list of product docs — position i mirrors row i of _index.
 _products: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
+# Word-frequency table built from _products' own text, used to spell-
+# correct query words toward real catalog words (see search_common.py).
+_vocabulary: Counter = Counter()
 
 
 def index_status() -> dict[str, Any]:
@@ -97,55 +107,45 @@ async def build_index() -> None:
     (re)builds the in-memory FAISS index. Safe to call more than once —
     e.g. right after a new product is saved via POST /products — to pick
     up fresh data without restarting the server."""
-    global _products, _index
+    global _products, _index, _vocabulary
 
     docs = await asyncio.to_thread(_load_products_sync)
     if not docs:
         logger.info("No local product rows found — local product search index left empty")
         _products = []
         _index = None
+        _vocabulary = Counter()
         return
 
     index = await asyncio.to_thread(_build_index_sync, docs)
 
     _products = docs
     _index = index
+    _vocabulary = build_vocabulary(docs, _combined_text)
     logger.info(f"Local product search index built with {len(docs)} products")
 
 
-def _get_matching_words(query: str, target_text: Any) -> str | None:
-    if not target_text:
-        return None
-    query_words = set(re.findall(r"\w+", query.lower()))
-    target_words = set(re.findall(r"\w+", str(target_text).lower()))
-    common = query_words.intersection(target_words)
-    return ", ".join(common).title() if common else None
-
-
-def _get_closest_word(query: str, target_text: Any) -> str:
-    if not target_text:
-        return "N/A"
-    query_words = re.findall(r"\w+", query.lower())
-    target_words = re.findall(r"\w+", str(target_text).lower())
-    for qw in query_words:
-        matches = difflib.get_close_matches(qw, target_words, n=1, cutoff=0.3)
-        if matches:
-            return matches[0].title()
-    return " ".join(str(target_text).split()[:2]).title()
-
-
 def _contains_term(doc: dict[str, Any], term: str, fields: list[str]) -> bool:
-    return any(term in str(doc.get(f, "")).lower() for f in fields)
+    return any(contains_loose(term, doc.get(f, "")) for f in fields)
 
 
 def search_products_sync(query: str) -> list[dict[str, Any]]:
     """Runs the exact -> partial -> AI-fallback search over the in-memory
     local product cache. CPU-bound — call via asyncio.to_thread from the route."""
-    search_term = re.sub(r"[^a-zA-Z0-9\s]", "", query).lower().strip()
+    search_term = clean_term(query)
     if not search_term or not _products:
         return []
 
-    # Layer 1: exact match (full phrase) against name / category / model / source file
+    # Spell-correct against the catalog's own vocabulary before matching,
+    # so a typo like "chiar" is corrected to "chair" instead of skipping
+    # straight to the much fuzzier AI fallback. Only touches words that
+    # aren't already a real catalog word, so this never changes a query
+    # that already matches something.
+    search_term = correct_query(search_term, _vocabulary)
+
+    # Layer 1: exact match (full phrase) against name / category / model
+    # / source file. contains_loose also matches across a one-word/
+    # two-word spelling difference on either side.
     exact_fields = ["productName", "category", "model", "sourceFileName"]
     exact_results = []
     for doc in _products:
@@ -154,9 +154,9 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             row["matchType"] = "Exact Match"
             row["matchPercentage"] = 100.0
             matched = (
-                _get_matching_words(search_term, row.get("productName", ""))
-                or _get_matching_words(search_term, row.get("category", ""))
-                or _get_matching_words(search_term, row.get("model", ""))
+                get_matching_words(search_term, row.get("productName", ""))
+                or get_matching_words(search_term, row.get("category", ""))
+                or get_matching_words(search_term, row.get("model", ""))
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
@@ -182,15 +182,15 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             model_text = str(doc.get("model", "")).lower()
 
             match_score = 0.0
-            if word in p_name.lower():
+            if contains_loose(word, p_name):
                 match_score = 90.0 - position_penalty
-            elif word in model_text:
+            elif contains_loose(word, model_text):
                 match_score = 85.0 - position_penalty
-            elif word in category_text:
+            elif contains_loose(word, category_text):
                 match_score = 80.0 - position_penalty
-            elif word in desc_text:
+            elif contains_loose(word, desc_text):
                 match_score = 75.0 - position_penalty
-            elif word in specs_text:
+            elif contains_loose(word, specs_text):
                 match_score = 70.0 - position_penalty
 
             if word_index == 0 and match_score > 0:
@@ -236,11 +236,11 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
         row = dict(doc)
         row["matchType"] = "AI Similarity Match"
         row["matchPercentage"] = float(percentage)
-        matched_in_name = _get_matching_words(search_term, p_name)
+        matched_in_name = get_matching_words(search_term, p_name)
         row["matchedKeyword"] = (
             matched_in_name
             if matched_in_name
-            else f"{_get_closest_word(search_term, p_name)} (~AI Match)"
+            else f"{get_closest_word(search_term, p_name)} (~AI Match)"
         )
         ai_results.append(row)
 

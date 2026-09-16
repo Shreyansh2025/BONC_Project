@@ -32,8 +32,7 @@ automatically, or call it manually after data changes.
 from __future__ import annotations
 
 import asyncio
-import difflib
-import re
+from collections import Counter
 from typing import Any
 
 import faiss
@@ -43,6 +42,14 @@ from sqlalchemy import text
 from app.db import get_engine
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
+from app.utils.search_common import (
+    build_vocabulary,
+    clean_term,
+    contains_loose,
+    correct_query,
+    get_closest_word,
+    get_matching_words,
+)
 
 STOP_WORDS = {
     "in", "at", "near", "and", "for", "the", "of", "to", "company",
@@ -53,6 +60,9 @@ STOP_WORDS = {
 # FAISS hit at position i maps directly to _companies[i].
 _companies: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
+# Word-frequency table built from _companies' own text, used to spell-
+# correct query words toward real catalog words (see search_common.py).
+_vocabulary: Counter = Counter()
 
 
 _COMPANY_SQL = text(
@@ -206,59 +216,48 @@ async def build_index() -> None:
     of Company + Industry + Category + SubCategory + BusinessType +
     AddressDetails + BoncUser, so keep that in mind if refresh frequency
     ever needs to change for load reasons."""
-    global _companies, _index
+    global _companies, _index, _vocabulary
 
     docs = await asyncio.to_thread(_load_companies_sync)
     if not docs:
         logger.info("No Verified companies found — search index left empty")
         _companies = []
         _index = None
+        _vocabulary = Counter()
         return
 
     index = await asyncio.to_thread(_build_index_sync, docs)
 
     _companies = docs
     _index = index
+    _vocabulary = build_vocabulary(docs, _combined_text)
     logger.info(f"B2B search index built with {len(docs)} companies")
 
 
-def _get_matching_words(query: str, target_text: Any) -> str | None:
-    if not target_text:
-        return None
-    query_words = set(re.findall(r"\w+", query.lower()))
-    target_words = set(re.findall(r"\w+", str(target_text).lower()))
-    common = query_words.intersection(target_words)
-    return ", ".join(common).title() if common else None
-
-
-def _get_closest_word(query: str, target_text: Any) -> str:
-    if not target_text:
-        return "N/A"
-    query_words = re.findall(r"\w+", query.lower())
-    target_words = re.findall(r"\w+", str(target_text).lower())
-    for qw in query_words:
-        matches = difflib.get_close_matches(qw, target_words, n=1, cutoff=0.3)
-        if matches:
-            return matches[0].title()
-    return " ".join(str(target_text).split()[:2]).title()
-
-
 def _contains_term(doc: dict[str, Any], term: str, fields: list[str]) -> bool:
-    return any(term in str(doc.get(f, "")).lower() for f in fields)
+    return any(contains_loose(term, doc.get(f, "")) for f in fields)
 
 
 def search_companies_sync(query: str) -> list[dict[str, Any]]:
     """Runs the exact -> partial -> AI-fallback search over the in-memory
     company cache. CPU-bound (regex + FAISS + embedding) — call this via
     asyncio.to_thread from the route so it doesn't block the event loop."""
-    search_term = re.sub(r"[^a-zA-Z0-9\s]", "", query).lower().strip()
+    search_term = clean_term(query)
     if not search_term or not _companies:
         return []
+
+    # Spell-correct against the catalog's own vocabulary before matching,
+    # so a typo like "chiar" is corrected to "chair" instead of skipping
+    # straight to the much fuzzier AI fallback. Only touches words that
+    # aren't already a real catalog word, so this never changes a query
+    # that already matches something.
+    search_term = correct_query(search_term, _vocabulary)
 
     # Layer 1: exact match (full phrase) against name / slug / industry /
     # category / city. City is back in this list now that AddressDetails
     # is joined — was removed here earlier when Company alone had no
-    # address columns to check.
+    # address columns to check. contains_loose also matches across a
+    # one-word/two-word spelling difference on either side.
     exact_fields = ["businessName", "businessSlug", "industryName", "categoryName", "city"]
     exact_results = []
     for doc in _companies:
@@ -267,10 +266,10 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             row["matchType"] = "Exact Match"
             row["matchPercentage"] = 100.0
             matched = (
-                _get_matching_words(search_term, row.get("businessName", ""))
-                or _get_matching_words(search_term, row.get("categoryName", ""))
-                or _get_matching_words(search_term, row.get("industryName", ""))
-                or _get_matching_words(search_term, row.get("city", ""))
+                get_matching_words(search_term, row.get("businessName", ""))
+                or get_matching_words(search_term, row.get("categoryName", ""))
+                or get_matching_words(search_term, row.get("industryName", ""))
+                or get_matching_words(search_term, row.get("city", ""))
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
@@ -297,17 +296,17 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             desc_text = str(doc.get("description", "")).lower()
 
             match_score = 0.0
-            if word in b_name.lower():
+            if contains_loose(word, b_name):
                 match_score = 90.0 - position_penalty
-            elif word in city_text:
+            elif contains_loose(word, city_text):
                 # City match ranked just under name match — a location
                 # word ("bangalore") should narrow results, not just add
                 # noise to the AI embedding the way it did before this
                 # join existed.
                 match_score = 87.0 - position_penalty
-            elif word in cat_text or word in industry_text:
+            elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
                 match_score = 85.0 - position_penalty
-            elif word in desc_text:
+            elif contains_loose(word, desc_text):
                 match_score = 80.0 - position_penalty
 
             if word_index == 0 and match_score > 0:
@@ -353,11 +352,11 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
         row = dict(doc)
         row["matchType"] = "AI Similarity Match"
         row["matchPercentage"] = float(percentage)
-        matched_in_name = _get_matching_words(search_term, b_name)
+        matched_in_name = get_matching_words(search_term, b_name)
         row["matchedKeyword"] = (
             matched_in_name
             if matched_in_name
-            else f"{_get_closest_word(search_term, b_name)} (~AI Match)"
+            else f"{get_closest_word(search_term, b_name)} (~AI Match)"
         )
         ai_results.append(row)
 

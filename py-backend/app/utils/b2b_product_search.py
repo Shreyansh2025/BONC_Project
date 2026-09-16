@@ -47,8 +47,7 @@ automatically.
 from __future__ import annotations
 
 import asyncio
-import difflib
-import re
+from collections import Counter
 from typing import Any
 
 import faiss
@@ -58,12 +57,23 @@ from sqlalchemy import text
 from app.db import get_engine
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
+from app.utils.search_common import (
+    build_vocabulary,
+    clean_term,
+    contains_loose,
+    correct_query,
+    get_closest_word,
+    get_matching_words,
+)
 
 STOP_WORDS = {"in", "at", "near", "and", "for", "the", "of", "to"}
 
 # Ordered list of product docs — position i mirrors row i of _index.
 _products: list[dict[str, Any]] = []
 _index: faiss.Index | None = None
+# Word-frequency table built from _products' own text, used to spell-
+# correct query words toward real catalog words (see search_common.py).
+_vocabulary: Counter = Counter()
 
 
 _PRODUCT_SQL = text(
@@ -255,60 +265,50 @@ async def build_index() -> None:
     Company + BusinessType + AddressDetails + BoncUser + Media, so keep
     that in mind if refresh frequency ever needs to change for load
     reasons."""
-    global _products, _index
+    global _products, _index, _vocabulary
 
     docs = await asyncio.to_thread(_load_products_sync)
     if not docs:
         logger.info("No Published products found — product search index left empty")
         _products = []
         _index = None
+        _vocabulary = Counter()
         return
 
     index = await asyncio.to_thread(_build_index_sync, docs)
 
     _products = docs
     _index = index
+    _vocabulary = build_vocabulary(docs, _combined_text)
     logger.info(f"B2B product search index built with {len(docs)} products")
-
-
-def _get_matching_words(query: str, target_text: Any) -> str | None:
-    if not target_text:
-        return None
-    query_words = set(re.findall(r"\w+", query.lower()))
-    target_words = set(re.findall(r"\w+", str(target_text).lower()))
-    common = query_words.intersection(target_words)
-    return ", ".join(common).title() if common else None
-
-
-def _get_closest_word(query: str, target_text: Any) -> str:
-    if not target_text:
-        return "N/A"
-    query_words = re.findall(r"\w+", query.lower())
-    target_words = re.findall(r"\w+", str(target_text).lower())
-    for qw in query_words:
-        matches = difflib.get_close_matches(qw, target_words, n=1, cutoff=0.3)
-        if matches:
-            return matches[0].title()
-    return " ".join(str(target_text).split()[:2]).title()
 
 
 def search_products_sync(query: str) -> list[dict[str, Any]]:
     """Exact -> partial -> AI-fallback search over the in-memory product
     cache. CPU-bound — call via asyncio.to_thread from the route."""
-    search_term = re.sub(r"[^a-zA-Z0-9\s]", "", query).lower().strip()
+    search_term = clean_term(query)
     if not search_term or not _products:
         return []
+
+    # Spell-correct against the catalog's own vocabulary before matching,
+    # so a typo like "chiar" is corrected to "chair" instead of skipping
+    # straight to the much fuzzier AI fallback. Only touches words that
+    # aren't already a real catalog word, so this never changes a query
+    # that already matches something.
+    search_term = correct_query(search_term, _vocabulary)
 
     # Layer 1: exact match on product name only (matches original tool's
     # behavior: products only ever matched on Product_Name, unlike
     # companies which checked several fields — kept for parity).
+    # contains_loose also matches across a one-word/two-word spelling
+    # difference (e.g. "air conditioner" query vs "AirConditioner" name).
     exact_results = []
     for doc in _products:
-        if search_term in str(doc.get("productName", "")).lower():
+        if contains_loose(search_term, doc.get("productName", "")):
             row = dict(doc)
             row["matchType"] = "Exact Match"
             row["matchPercentage"] = 100.0
-            row["matchedKeyword"] = _get_matching_words(search_term, row.get("productName", "")) or search_term.title()
+            row["matchedKeyword"] = get_matching_words(search_term, row.get("productName", "")) or search_term.title()
             exact_results.append(row)
 
     if exact_results:
@@ -330,7 +330,7 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             p_name = str(doc.get("productName", ""))
             if p_name in seen_names:
                 continue
-            if word not in p_name.lower():
+            if not contains_loose(word, p_name):
                 continue
 
             match_score = 90.0 - position_penalty
@@ -377,9 +377,9 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
         row = dict(doc)
         row["matchType"] = "AI Similarity Match"
         row["matchPercentage"] = float(percentage)
-        matched_in_name = _get_matching_words(search_term, p_name)
+        matched_in_name = get_matching_words(search_term, p_name)
         row["matchedKeyword"] = (
-            matched_in_name if matched_in_name else f"{_get_closest_word(search_term, p_name)} (~AI Match)"
+            matched_in_name if matched_in_name else f"{get_closest_word(search_term, p_name)} (~AI Match)"
         )
         ai_results.append(row)
 
