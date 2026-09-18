@@ -84,6 +84,33 @@ MAX_CORRECTION_CACHE = 5000
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Legal/structural suffixes — describe company FORM, not what it sells.
+# Never required for a match, never block one. If they DO appear in a
+# company's own text, they still contribute to ranking via the normal
+# description-tier score in the partial-match loop — just not counted
+# toward the mandatory/majority word requirements.
+FILLER_WORDS = {
+    "private", "limited", "ltd", "pvt", "llp", "inc", "incorporated",
+    "corp", "corporation", "enterprises", "industries", "group", "co",
+    "company", "companies", "firm", "concern",
+}
+
+# Words describing HOW a business operates (buy/sell role), mapped to
+# BONC's real BusinessTypeName values. "Supplier" isn't itself a BONC
+# BusinessType, so it's treated as an umbrella term over the real ones.
+BUSINESS_TYPE_SYNONYMS: dict[str, set[str]] = {
+    "supplier": {"distributor", "manufacturer", "reseller", "wholesaler", "importer", "exporter"},
+    "suppliers": {"distributor", "manufacturer", "reseller", "wholesaler", "importer", "exporter"},
+    "distributor": {"distributor"}, "distributors": {"distributor"},
+    "manufacturer": {"manufacturer"}, "manufacturers": {"manufacturer"},
+    "dealer": {"distributor", "reseller"}, "dealers": {"distributor", "reseller"},
+    "wholesaler": {"wholesaler"}, "wholesalers": {"wholesaler"},
+    "exporter": {"exporter"}, "exporters": {"exporter"},
+    "importer": {"importer"}, "importers": {"importer"},
+    "trader": {"reseller", "distributor"}, "traders": {"reseller", "distributor"},
+    "reseller": {"reseller"}, "resellers": {"reseller"},
+}
+
 
 def clean_term(raw: str) -> str:
     """Lowercase, strip anything that isn't a letter/digit/space. Same
@@ -161,7 +188,7 @@ def build_vocabulary(
     """Word-frequency table built from every doc's searchable text (the
     same text each file already builds for FAISS embedding). Spell
     correction below matches query words against this vocabulary, so a
-    typo is corrected toward a real catalog word (a brand, a product
+    tyo is corrected toward a real catalog word (a brand, a product
     name, a city) rather than an unrelated generic-English word."""
     vocabulary: Counter = Counter()
     for doc in docs:
@@ -371,3 +398,13 @@ def get_closest_word(query: str, target_text: Any) -> str:
         if matches:
             return matches[0].title()
     return " ".join(str(target_text).split()[:2]).title()
+
+
+def matches_business_type(word: str, business_type_text: str) -> bool:
+    """True if `word` (e.g. 'suppliers') is a recognized business-type
+    term and this doc's real BusinessTypeName falls under it."""
+    wanted = BUSINESS_TYPE_SYNONYMS.get(word.lower())
+    if not wanted or not business_type_text:
+        return False
+    bt = business_type_text.lower()
+    return any(w in bt for w in wanted)

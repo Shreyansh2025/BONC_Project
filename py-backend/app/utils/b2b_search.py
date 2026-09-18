@@ -60,11 +60,12 @@ from app.utils.search_common import (
     get_closest_word,
     get_matching_words,
     shares_any_word,
+    FILLER_WORDS,
+    matches_business_type,
 )
 
 STOP_WORDS = {
-    "in", "at", "near", "and", "for", "the", "of", "to", "company",
-    "ltd", "pvt", "limited", "private", "enterprises", "industries",
+    "in", "at", "near", "and", "for", "the", "of", "to",
 }
 
 # Once the exact + partial (lexical) layers already turned up at least
@@ -345,13 +346,16 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # -- the old `len(w) > 2` cutoff silently dropped real short product/
     # business terms like "AC" or "TV" from ever contributing a partial
     # match.
-    words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
+    words = [
+        w for w in search_term.split()
+        if len(w) >= 2 and w not in STOP_WORDS and w not in FILLER_WORDS
+    ]
     partial_results: list[dict[str, Any]] = []
 
     if words:
         # Union of every word's candidate doc positions -- a doc gets
         # scored against EVERY query word, not just whichever word's loop
-        # happens to reach it first (see below for why that was wrong).
+        # happens to reach it first.
         all_candidates: set[int] = set()
         for word in words:
             all_candidates |= candidate_indices(word, state.inverted_index, len(state.companies))
@@ -362,51 +366,45 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             if b_id in seen_ids:
                 continue
 
-            b_name = str(doc.get("businessName", ""))
+            b_name = str(doc.get("businessName", "")).lower()
             city_text = str(doc.get("city", "")).lower()
+            country_text = str(doc.get("country", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
+            business_type_text = str(doc.get("businessTypeName", "")).lower()
             desc_text = str(doc.get("description", "")).lower()
 
-            # Score EACH query word against this doc, then average over
-            # ALL of them (a word that doesn't match contributes 0). This
-            # is what makes "mobile in pune" and "mobile in kolkata"
-            # actually diverge: a "Mobile Solutions Ltd" in Delhi now
-            # scores (90 + 0) / 2 = 45, while "Pune Mobile Traders" in
-            # Pune scores (90 + 87) / 2 = 88.5 -- matching every word
-            # beats matching only the generic one, instead of the city
-            # word being unable to affect the outcome at all (the
-            # previous per-word-independent design's actual bug).
             matched_words = []
             word_scores = []
+            # True only if some word hit a field that says WHAT this company
+            # sells/is (name/category/industry) — not just where it is or how
+            # it operates. This is the mandatory gate: "resistors suppliers
+            # india" must land on something resistor-related, not just on
+            # "suppliers" (business type) + "india" (country).
+            core_matched = False
+
             for word in words:
                 score = 0.0
                 if contains_loose(word, b_name):
-                    score = 90.0
-                elif contains_loose(word, city_text):
-                    # City match ranked just under name match — a location
-                    # word ("pune") should narrow results, not just add
-                    # noise to the AI embedding the way it did before this
-                    # join existed.
-                    score = 87.0
+                    score, core_matched = 90.0, True
                 elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                    score = 85.0
-                elif contains_loose(word, desc_text):
+                    score, core_matched = 85.0, True
+                elif contains_loose(word, city_text):
+                    score = 82.0
+                elif matches_business_type(word, business_type_text):
                     score = 80.0
+                elif contains_loose(word, country_text):
+                    score = 75.0
+                elif contains_loose(word, desc_text):
+                    score = 70.0
                 word_scores.append(score)
                 if score > 0:
                     matched_words.append(word)
 
-            # Require a MAJORITY of query words to match somewhere, not
-            # just any one of them. Averaging alone (below) only demotes
-            # a doc that matches fewer words -- it doesn't exclude it, so
-            # a furniture business in Kolkata that never mentions "mobile"
-            # anywhere still scored (0 + 87) / 2 = 43.5 from "kolkata"
-            # alone and cleared the old flat >= 10.0 floor. For a 2-word
-            # query this requires BOTH words to be found (a city alone is
-            # no longer enough); for 3+ words it requires more than half.
-            # A single-word query is unaffected (that one word must match,
-            # same as before).
+            # Mandatory: at least one real product/category word must match.
+            if not core_matched:
+                continue
+            # Majority: most of the remaining (non-filler) words must match too.
             if len(matched_words) < (len(words) // 2 + 1):
                 continue
 
@@ -416,9 +414,6 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
                 row["matchPercentage"] = round(combined_score, 2)
-                # All the words that actually matched, not just one --
-                # e.g. "Mobile, Pune" instead of only "Mobile", so it's
-                # visible in the response which words drove the score.
                 row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
 

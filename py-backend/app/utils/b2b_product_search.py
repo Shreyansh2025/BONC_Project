@@ -74,6 +74,8 @@ from app.utils.search_common import (
     get_closest_word,
     get_matching_words,
     shares_any_word,
+    FILLER_WORDS,
+    matches_business_type,
 )
 
 STOP_WORDS = {"in", "at", "near", "and", "for", "the", "of", "to"}
@@ -374,7 +376,10 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
     # brand beats category/industry. Words of length 2 are kept (only
     # true stop words are dropped) so short but meaningful terms like
     # "AC" or "TV" can still contribute a partial match.
-    words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
+    words = [
+        w for w in search_term.split() 
+        if len(w) >= 2 and w not in STOP_WORDS and w not in FILLER_WORDS
+    ]
     partial_results: list[dict[str, Any]] = []
 
     if words:
@@ -399,42 +404,37 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
                 continue
 
             p_name = str(doc.get("productName", ""))
-            city_text = str(doc.get("city", "")).lower()
             brand_text = str(doc.get("brandName", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
+            city_text = str(doc.get("city", "")).lower()
+            country_text = str(doc.get("country", "")).lower()
+            business_type_text = str(doc.get("businessTypeName", "")).lower()
 
-            # Score EACH query word against this doc, then average over
-            # ALL of them (a word that doesn't match contributes 0). A
-            # "Mobile Phone X1" in Delhi now scores (90 + 0) / 2 = 45 for
-            # "mobile dhanbad", while the same product in Dhanbad scores
-            # (90 + 87) / 2 = 88.5 -- matching every word beats matching
-            # only the generic one, instead of the city word being unable
-            # to change the outcome at all.
             matched_words = []
             word_scores = []
+            core_matched = False  # product name / brand / category / industry
+
             for word in words:
                 score = 0.0
                 if contains_loose(word, p_name):
-                    score = 90.0
-                elif contains_loose(word, city_text):
-                    score = 87.0
+                    score, core_matched = 90.0, True
                 elif contains_loose(word, brand_text):
-                    score = 85.0
+                    score, core_matched = 87.0, True
                 elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                    score = 80.0
+                    score, core_matched = 85.0, True
+                elif contains_loose(word, city_text):
+                    score = 82.0
+                elif matches_business_type(word, business_type_text):
+                    score = 78.0
+                elif contains_loose(word, country_text):
+                    score = 74.0
                 word_scores.append(score)
                 if score > 0:
                     matched_words.append(word)
 
-            # Require a MAJORITY of query words to match somewhere, not
-            # just any one of them -- same reasoning as b2b_search.py.
-            # Averaging alone doesn't exclude a doc that only matches the
-            # city, it just demotes it; a product in Kolkata that has no
-            # connection to "mobile" whatsoever still cleared the old flat
-            # >= 10.0 floor via the city match alone. For a 2-word query
-            # this requires BOTH words to be found; for 3+ words it
-            # requires more than half. Single-word queries unaffected.
+            if not core_matched:
+                continue
             if len(matched_words) < (len(words) // 2 + 1):
                 continue
 
@@ -444,7 +444,6 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
                 row["matchPercentage"] = round(combined_score, 2)
-                # All the words that actually matched, not just one.
                 row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
 
