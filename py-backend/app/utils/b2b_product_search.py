@@ -1,6 +1,6 @@
 """
 B2B product catalog search: exact match -> priority partial-word match ->
-AI (FAISS) fallback.
+AI (FAISS) fallback, blended into one hybrid-ranked result set.
 
 Reads directly from the company's own live `ProductsAndServices` table,
 joined with:
@@ -38,16 +38,19 @@ Faithfully keeps one quirk from the original tool: exact/partial match is
 name-only for products (unlike companies, which check several fields) —
 see search_products_sync below.
 
-Same caching strategy as before: results are loaded into memory as a
-plain list and the same three-layer scoring logic runs directly against
-it. build_index() refreshes this cache; main.py's hourly loop calls it
-automatically.
+Caching / concurrency strategy: results are loaded into memory as a plain
+list. Everything the search functions touch (products list, FAISS index,
+vocabulary, inverted index) lives in ONE `_ProductState` object behind a
+single module-level reference, swapped atomically in build_index() — see
+the matching note in b2b_search.py for why that matters (main.py rebuilds
+this every hour while requests keep flowing on other threads).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any
 
 import faiss
@@ -58,22 +61,47 @@ from app.db import get_engine
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
 from app.utils.search_common import (
+    build_inverted_index,
     build_vocabulary,
+    candidate_indices,
     clean_term,
     contains_loose,
     correct_query,
     get_closest_word,
     get_matching_words,
+    shares_any_word,
 )
 
 STOP_WORDS = {"in", "at", "near", "and", "for", "the", "of", "to"}
 
-# Ordered list of product docs — position i mirrors row i of _index.
-_products: list[dict[str, Any]] = []
-_index: faiss.Index | None = None
-# Word-frequency table built from _products' own text, used to spell-
-# correct query words toward real catalog words (see search_common.py).
-_vocabulary: Counter = Counter()
+# See the identical constant in b2b_search.py: below this many lexical
+# (exact + partial) hits, the AI/FAISS layer also runs and its results are
+# merged in rather than skipped or blocked by an early return.
+MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI = 20
+
+# AI/FAISS layer confidence bands (B2B product search) -- same reasoning
+# as the identical constants in b2b_search.py. Below AI_MIN_PERCENTAGE a
+# result is dropped outright. Between AI_MIN_PERCENTAGE and
+# AI_HIGH_CONFIDENCE_PERCENTAGE, a result also needs at least one literal
+# shared word with the query (see shares_any_word) to be kept, since
+# that band is where "same broad domain, different thing" false matches
+# live. At/above AI_HIGH_CONFIDENCE_PERCENTAGE it's trusted on semantics
+# alone. Starting numbers, not tuned against labeled data yet -- adjust
+# these first once real good/bad examples are available.
+AI_MIN_PERCENTAGE = 40.0
+AI_HIGH_CONFIDENCE_PERCENTAGE = 65.0
+
+
+@dataclass(frozen=True)
+class _ProductState:
+    # Ordered list of product docs — position i mirrors row i of `index`.
+    products: list[dict[str, Any]] = field(default_factory=list)
+    index: faiss.Index | None = None
+    vocabulary: Counter = field(default_factory=Counter)
+    inverted_index: dict[str, set[int]] = field(default_factory=dict)
+
+
+_state = _ProductState()
 
 
 _PRODUCT_SQL = text(
@@ -163,7 +191,8 @@ def _s(value: Any) -> str | None:
 
 def index_status() -> dict[str, Any]:
     """Snapshot of in-memory index state, for the /api/debug/index-status route."""
-    return {"count": len(_products), "index_built": _index is not None}
+    state = _state
+    return {"count": len(state.products), "index_built": state.index is not None}
 
 
 def _combined_text(doc: dict[str, Any]) -> str:
@@ -259,35 +288,38 @@ def _build_index_sync(docs: list[dict[str, Any]]):
 
 async def build_index() -> None:
     """Loads all Published products from the live ProductsAndServices table
-    and (re)builds the in-memory FAISS index. Called once at startup and
-    then every hour by main.py's auto-refresh loop — each call does a full
-    read of ProductsAndServices + Industry + Category + SubCategory +
-    Company + BusinessType + AddressDetails + BoncUser + Media, so keep
-    that in mind if refresh frequency ever needs to change for load
-    reasons."""
-    global _products, _index, _vocabulary
+    and (re)builds the in-memory FAISS index + inverted index. Called once
+    at startup and then every hour by main.py's auto-refresh loop — each
+    call does a full read of ProductsAndServices + Industry + Category +
+    SubCategory + Company + BusinessType + AddressDetails + BoncUser +
+    Media, so keep that in mind if refresh frequency ever needs to change
+    for load reasons."""
+    global _state
 
     docs = await asyncio.to_thread(_load_products_sync)
     if not docs:
         logger.info("No Published products found — product search index left empty")
-        _products = []
-        _index = None
-        _vocabulary = Counter()
+        _state = _ProductState()
         return
 
     index = await asyncio.to_thread(_build_index_sync, docs)
+    vocabulary = build_vocabulary(docs, _combined_text)
+    inverted = build_inverted_index(docs, _combined_text)
 
-    _products = docs
-    _index = index
-    _vocabulary = build_vocabulary(docs, _combined_text)
+    # Single atomic pointer swap — see b2b_search.py's build_index() for
+    # why this matters instead of reassigning several globals one at a time.
+    _state = _ProductState(
+        products=docs, index=index, vocabulary=vocabulary, inverted_index=inverted
+    )
     logger.info(f"B2B product search index built with {len(docs)} products")
 
 
 def search_products_sync(query: str) -> list[dict[str, Any]]:
-    """Exact -> partial -> AI-fallback search over the in-memory product
-    cache. CPU-bound — call via asyncio.to_thread from the route."""
+    """Exact -> partial -> AI-fallback hybrid search over the in-memory
+    product cache. CPU-bound — call via asyncio.to_thread from the route."""
+    state = _state  # one consistent snapshot for the whole call
     search_term = clean_term(query)
-    if not search_term or not _products:
+    if not search_term or not state.products:
         return []
 
     # Spell-correct against the catalog's own vocabulary before matching,
@@ -295,92 +327,120 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
     # straight to the much fuzzier AI fallback. Only touches words that
     # aren't already a real catalog word, so this never changes a query
     # that already matches something.
-    search_term = correct_query(search_term, _vocabulary)
+    search_term = correct_query(search_term, state.vocabulary)
 
     # Layer 1: exact match on product name only (matches original tool's
     # behavior: products only ever matched on Product_Name, unlike
     # companies which checked several fields — kept for parity).
     # contains_loose also matches across a one-word/two-word spelling
-    # difference (e.g. "air conditioner" query vs "AirConditioner" name).
+    # difference (e.g. "air conditioner" query vs "AirConditioner" name),
+    # and is now boundary-safe (a query for "pan" can no longer match
+    # "pant"/"panel").
     exact_results = []
-    for doc in _products:
+    # Dedup by productsAndServicesId, not by name -- two different
+    # products that happen to share a display name (common across
+    # different sellers) are still two different listings and must both
+    # be able to appear. The old seen_names (name-string) set meant the
+    # second one silently vanished from the results.
+    seen_ids: set[str] = set()
+    candidates = candidate_indices(search_term, state.inverted_index, len(state.products))
+    for i in candidates:
+        doc = state.products[i]
         if contains_loose(search_term, doc.get("productName", "")):
             row = dict(doc)
             row["matchType"] = "Exact Match"
             row["matchPercentage"] = 100.0
             row["matchedKeyword"] = get_matching_words(search_term, row.get("productName", "")) or search_term.title()
             exact_results.append(row)
-
-    if exact_results:
-        return sorted(exact_results, key=lambda r: r["matchPercentage"], reverse=True)
+            seen_ids.add(str(doc.get("productsAndServicesId", "")))
 
     # Layer 1.5: partial word match — candidates are name-matches only,
     # same as the original. City is intentionally NOT added as its own
     # scoring branch here (unlike companies) to keep the "name-only"
     # quirk intact for products — city now only influences the AI layer
     # via _combined_text. Revisit if product search should also weight
-    # city explicitly like company search does.
-    words = [w for w in search_term.split() if len(w) > 2 and w not in STOP_WORDS]
-    seen_names: set[str] = set()
+    # city explicitly like company search does. Words of length 2 are now
+    # kept (only true stop words are dropped) so short but meaningful
+    # terms like "AC" or "TV" can still contribute a partial match.
+    words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
     partial_results: list[dict[str, Any]] = []
 
     for word_index, word in enumerate(words):
         position_penalty = word_index * 2.0
-        for doc in _products:
-            p_name = str(doc.get("productName", ""))
-            if p_name in seen_names:
+        word_candidates = candidate_indices(word, state.inverted_index, len(state.products))
+        for i in word_candidates:
+            doc = state.products[i]
+            p_id = str(doc.get("productsAndServicesId", ""))
+            if p_id in seen_ids:
                 continue
+            p_name = str(doc.get("productName", ""))
             if not contains_loose(word, p_name):
                 continue
 
             match_score = 90.0 - position_penalty
-            if word_index == 0:
-                match_score = min(99.0, match_score + 10.0)
+            # Disabled: this used to jump a match straight to ~99% just
+            # for hitting the FIRST query word, regardless of whether any
+            # other word in a multi-word query matched at all -- see the
+            # identical note in b2b_search.py. Left commented, not
+            # deleted, in case a more careful version is wanted later.
+            # if word_index == 0:
+            #     match_score = min(99.0, match_score + 10.0)
 
             if match_score >= 10.0:
-                seen_names.add(p_name)
+                seen_ids.add(p_id)
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
                 row["matchPercentage"] = round(match_score, 2)
                 row["matchedKeyword"] = word.title()
                 partial_results.append(row)
 
-    if partial_results:
-        return sorted(partial_results, key=lambda r: r["matchPercentage"], reverse=True)
+    lexical_results = exact_results + partial_results
 
-    # Layer 2: AI fallback via FAISS similarity over the embedded product text
-    if _index is None:
-        return []
+    # Layer 2: AI fallback via FAISS similarity over the embedded product
+    # text. Now runs whenever lexical coverage is thin (below
+    # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), merged into the same ranked
+    # list instead of being blocked outright by any single exact/partial
+    # hit — see the matching note in b2b_search.py.
+    ai_results: list[dict[str, Any]] = []
+    if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
+        model = get_model()
+        query_vector = model.encode([search_term])
+        faiss.normalize_L2(query_vector)
+        distances, indices = state.index.search(query_vector.astype("float32"), k=50)
 
-    model = get_model()
-    query_vector = model.encode([search_term])
-    faiss.normalize_L2(query_vector)
-    distances, indices = _index.search(query_vector.astype("float32"), k=50)
+        for i, idx in enumerate(indices[0]):
+            if idx == -1 or idx >= len(state.products):
+                continue
+            distance_score = distances[0][i]
+            cosine_sim = 1 - (distance_score / 2)
+            percentage = max(0.0, round(cosine_sim * 100, 2))
+            if percentage < AI_MIN_PERCENTAGE:
+                continue
 
-    ai_results = []
-    seen_names = set()
-    for i, idx in enumerate(indices[0]):
-        if idx == -1 or idx >= len(_products):
-            continue
-        distance_score = distances[0][i]
-        cosine_sim = 1 - (distance_score / 2)
-        percentage = max(0.0, round(cosine_sim * 100, 2))
-        if percentage < 40.0:
-            continue
+            doc = state.products[int(idx)]
+            p_id = str(doc.get("productsAndServicesId", ""))
+            if p_id in seen_ids:
+                continue
 
-        doc = _products[int(idx)]
-        p_name = str(doc.get("productName", ""))
-        if p_name in seen_names:
-            continue
-        seen_names.add(p_name)
+            # Middle-confidence band safety net: without at least one
+            # shared word, a same-domain-but-different-thing match gets
+            # dropped here instead of surfacing on semantic proximity alone.
+            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE and not shares_any_word(
+                search_term, _combined_text(doc)
+            ):
+                continue
 
-        row = dict(doc)
-        row["matchType"] = "AI Similarity Match"
-        row["matchPercentage"] = float(percentage)
-        matched_in_name = get_matching_words(search_term, p_name)
-        row["matchedKeyword"] = (
-            matched_in_name if matched_in_name else f"{get_closest_word(search_term, p_name)} (~AI Match)"
-        )
-        ai_results.append(row)
+            seen_ids.add(p_id)
+            p_name = str(doc.get("productName", ""))
 
-    return sorted(ai_results, key=lambda r: r["matchPercentage"], reverse=True)
+            row = dict(doc)
+            row["matchType"] = "AI Similarity Match"
+            row["matchPercentage"] = float(percentage)
+            matched_in_name = get_matching_words(search_term, p_name)
+            row["matchedKeyword"] = (
+                matched_in_name if matched_in_name else f"{get_closest_word(search_term, p_name)} (~AI Match)"
+            )
+            ai_results.append(row)
+
+    combined = lexical_results + ai_results
+    return sorted(combined, key=lambda r: r["matchPercentage"], reverse=True)

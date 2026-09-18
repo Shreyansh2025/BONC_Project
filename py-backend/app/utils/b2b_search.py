@@ -1,6 +1,6 @@
 """
 B2B company search: exact match -> priority partial-word match -> AI
-(FAISS) fallback.
+(FAISS) fallback, blended into one hybrid-ranked result set.
 
 Reads directly from the company's own live `Company` table, joined with:
   - Industry / Category / SubCategory  -> human-readable names for
@@ -22,17 +22,25 @@ in AddressDetails, a separate table, not missing entirely) plus two
 fields (IndustryType, UserSlug) seen in the company's own search API
 response that weren't available here before.
 
-Same caching strategy as before: the company set is small, so the whole
-result set is loaded into memory as a plain list and the same
-three-layer scoring logic runs directly against that list. build_index()
-refreshes this cache; the hourly auto-refresh loop in main.py calls it
-automatically, or call it manually after data changes.
+Caching / concurrency strategy: the company set is small enough to keep
+in memory. Everything the search functions touch below (companies list,
+FAISS index, vocabulary, inverted index) lives in ONE `_CompanyState`
+object behind a single module-level reference, swapped atomically in
+build_index(). This matters because build_index() runs every hour (see
+main.py) while search requests keep flowing on other threads: swapping
+four separate globals one at a time (as the previous version did) lets a
+request in flight read, say, the NEW companies list but the OLD FAISS
+index (built for the old list's length/order), which can silently
+mismatch rows or throw an IndexError. Capturing `_state` once at the top
+of each search function means a request always sees one fully-consistent
+snapshot, whichever build it happens to land on.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any
 
 import faiss
@@ -43,12 +51,15 @@ from app.db import get_engine
 from app.logger import logger
 from app.utils.embedding_model import EMBEDDING_DIM, get_model
 from app.utils.search_common import (
+    build_inverted_index,
     build_vocabulary,
+    candidate_indices,
     clean_term,
     contains_loose,
     correct_query,
     get_closest_word,
     get_matching_words,
+    shares_any_word,
 )
 
 STOP_WORDS = {
@@ -56,13 +67,52 @@ STOP_WORDS = {
     "ltd", "pvt", "limited", "private", "enterprises", "industries",
 }
 
-# Ordered list of company docs — position i mirrors row i of _index, so a
-# FAISS hit at position i maps directly to _companies[i].
-_companies: list[dict[str, Any]] = []
-_index: faiss.Index | None = None
-# Word-frequency table built from _companies' own text, used to spell-
-# correct query words toward real catalog words (see search_common.py).
-_vocabulary: Counter = Counter()
+# Once the exact + partial (lexical) layers already turned up at least
+# this many results, skip the FAISS/AI layer entirely for this request --
+# there's already ample coverage and the extra embedding + similarity
+# search would only add latency for little relevance benefit. Below this
+# count (including the common "0 lexical results" case that used to be
+# the ONLY time AI ran), AI results are computed and MERGED in alongside
+# the lexical ones instead of being skipped outright. This is the fix for
+# "Early Return Relevance Killer": previously ANY exact or partial hit,
+# even a single weak one, fully prevented the AI layer from ever running.
+MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI = 20
+
+# AI/FAISS layer confidence bands (company search). Below
+# AI_MIN_PERCENTAGE, a result is dropped outright -- unrelated. Between
+# AI_MIN_PERCENTAGE and AI_HIGH_CONFIDENCE_PERCENTAGE, the embedding
+# thinks it's "somewhat related" but that band is exactly where two
+# things in the same broad domain (e.g. "cargo" and a "Car Rental
+# Services" business -- both transport-related, no word in common) can
+# score highly enough to slip through on semantics alone. So in that
+# middle band, a result also needs to share at least one literal word
+# with the query (see shares_any_word in search_common.py) to be kept.
+# At or above AI_HIGH_CONFIDENCE_PERCENTAGE the match is trusted on
+# semantics alone, no shared word required -- this is what still lets a
+# genuine typo or synonym ("chiar" already gets spell-corrected, but a
+# true synonym the vocabulary doesn't know) through.
+#
+# There's no labeled test data behind these two exact numbers yet --
+# they're a conservative starting split, not a tuned threshold. If real
+# examples of good/bad AI matches turn up, these are the two numbers to
+# adjust first.
+AI_MIN_PERCENTAGE = 35.0
+AI_HIGH_CONFIDENCE_PERCENTAGE = 60.0
+
+
+@dataclass(frozen=True)
+class _CompanyState:
+    # Ordered list of company docs — position i mirrors row i of `index`.
+    companies: list[dict[str, Any]] = field(default_factory=list)
+    index: faiss.Index | None = None
+    # Word-frequency table built from companies' own text, used to spell-
+    # correct query words toward real catalog words (see search_common.py).
+    vocabulary: Counter = field(default_factory=Counter)
+    # word -> set of doc positions containing that word (see search_common.py).
+    inverted_index: dict[str, set[int]] = field(default_factory=dict)
+
+
+_state = _CompanyState()
 
 
 _COMPANY_SQL = text(
@@ -123,7 +173,8 @@ def _s(value: Any) -> str | None:
 
 def index_status() -> dict[str, Any]:
     """Snapshot of in-memory index state, for the /api/debug/index-status route."""
-    return {"count": len(_companies), "index_built": _index is not None}
+    state = _state
+    return {"count": len(state.companies), "index_built": state.index is not None}
 
 
 def _combined_text(doc: dict[str, Any]) -> str:
@@ -211,26 +262,29 @@ def _build_index_sync(docs: list[dict[str, Any]]):
 
 async def build_index() -> None:
     """Loads all Verified companies from the live Company table and
-    (re)builds the in-memory FAISS index. Called once at startup and then
-    every hour by main.py's auto-refresh loop — each call does a full read
-    of Company + Industry + Category + SubCategory + BusinessType +
-    AddressDetails + BoncUser, so keep that in mind if refresh frequency
-    ever needs to change for load reasons."""
-    global _companies, _index, _vocabulary
+    (re)builds the in-memory FAISS index + inverted index. Called once at
+    startup and then every hour by main.py's auto-refresh loop — each call
+    does a full read of Company + Industry + Category + SubCategory +
+    BusinessType + AddressDetails + BoncUser, so keep that in mind if
+    refresh frequency ever needs to change for load reasons."""
+    global _state
 
     docs = await asyncio.to_thread(_load_companies_sync)
     if not docs:
         logger.info("No Verified companies found — search index left empty")
-        _companies = []
-        _index = None
-        _vocabulary = Counter()
+        _state = _CompanyState()
         return
 
     index = await asyncio.to_thread(_build_index_sync, docs)
+    vocabulary = build_vocabulary(docs, _combined_text)
+    inverted = build_inverted_index(docs, _combined_text)
 
-    _companies = docs
-    _index = index
-    _vocabulary = build_vocabulary(docs, _combined_text)
+    # Single atomic pointer swap — any search already in flight keeps using
+    # the previous (still fully self-consistent) _CompanyState until it
+    # finishes; the next call to a search function picks up this one.
+    _state = _CompanyState(
+        companies=docs, index=index, vocabulary=vocabulary, inverted_index=inverted
+    )
     logger.info(f"B2B search index built with {len(docs)} companies")
 
 
@@ -239,11 +293,13 @@ def _contains_term(doc: dict[str, Any], term: str, fields: list[str]) -> bool:
 
 
 def search_companies_sync(query: str) -> list[dict[str, Any]]:
-    """Runs the exact -> partial -> AI-fallback search over the in-memory
-    company cache. CPU-bound (regex + FAISS + embedding) — call this via
-    asyncio.to_thread from the route so it doesn't block the event loop."""
+    """Runs the exact -> partial -> AI-fallback hybrid search over the
+    in-memory company cache. CPU-bound (regex + FAISS + embedding) — call
+    this via asyncio.to_thread from the route so it doesn't block the
+    event loop."""
+    state = _state  # one consistent snapshot for the whole call
     search_term = clean_term(query)
-    if not search_term or not _companies:
+    if not search_term or not state.companies:
         return []
 
     # Spell-correct against the catalog's own vocabulary before matching,
@@ -251,16 +307,24 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # straight to the much fuzzier AI fallback. Only touches words that
     # aren't already a real catalog word, so this never changes a query
     # that already matches something.
-    search_term = correct_query(search_term, _vocabulary)
+    search_term = correct_query(search_term, state.vocabulary)
 
     # Layer 1: exact match (full phrase) against name / slug / industry /
     # category / city. City is back in this list now that AddressDetails
     # is joined — was removed here earlier when Company alone had no
     # address columns to check. contains_loose also matches across a
-    # one-word/two-word spelling difference on either side.
+    # one-word/two-word spelling difference on either side, and is now
+    # boundary-safe (a query for "pan" can no longer match "pant"/"panel").
     exact_fields = ["businessName", "businessSlug", "industryName", "categoryName", "city"]
     exact_results = []
-    for doc in _companies:
+    # Dedup by businessId, not by name -- two different companies that
+    # happen to share a display name are still two different sellers and
+    # must both be able to appear. The old seen_names (name-string) set
+    # meant the second one silently vanished from the results.
+    seen_ids: set[str] = set()
+    candidates = candidate_indices(search_term, state.inverted_index, len(state.companies))
+    for i in candidates:
+        doc = state.companies[i]
         if _contains_term(doc, search_term, exact_fields):
             row = dict(doc)
             row["matchType"] = "Exact Match"
@@ -273,23 +337,27 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
-
-    if exact_results:
-        return sorted(exact_results, key=lambda r: r["matchPercentage"], reverse=True)
+            seen_ids.add(str(doc.get("businessId", "")))
 
     # Layer 1.5: partial word match, weighted by which field it hit and
-    # boosted for whichever query word appears first.
-    words = [w for w in search_term.split() if len(w) > 2 and w not in STOP_WORDS]
-    seen_names: set[str] = set()
+    # boosted for whichever query word appears first. Words of length 2
+    # are now kept (only true stop words like "in"/"at"/"to" are dropped)
+    # -- the old `len(w) > 2` cutoff silently dropped real short product/
+    # business terms like "AC" or "TV" from ever contributing a partial
+    # match.
+    words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
     partial_results: list[dict[str, Any]] = []
 
     for word_index, word in enumerate(words):
         position_penalty = word_index * 2.0
-        for doc in _companies:
-            b_name = str(doc.get("businessName", ""))
-            if b_name in seen_names:
+        word_candidates = candidate_indices(word, state.inverted_index, len(state.companies))
+        for i in word_candidates:
+            doc = state.companies[i]
+            b_id = str(doc.get("businessId", ""))
+            if b_id in seen_ids:
                 continue
 
+            b_name = str(doc.get("businessName", ""))
             city_text = str(doc.get("city", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
@@ -309,55 +377,79 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             elif contains_loose(word, desc_text):
                 match_score = 80.0 - position_penalty
 
-            if word_index == 0 and match_score > 0:
-                match_score = min(99.0, match_score + 10.0)
+            # Disabled: this used to jump a match straight to ~99% just
+            # for hitting the FIRST query word, regardless of whether any
+            # other word in a multi-word query matched at all. On "Steel
+            # Hinges", a doc matching only "steel" could outrank a doc
+            # matching both words, since the first-word boost alone beat
+            # the second doc's unboosted combined score. Left commented
+            # (not deleted) in case a smaller, more careful version of
+            # this idea is wanted later -- e.g. a boost that only applies
+            # once ALL query words have matched something.
+            # if word_index == 0 and match_score > 0:
+            #     match_score = min(99.0, match_score + 10.0)
 
             if match_score >= 10.0:
-                seen_names.add(b_name)
+                seen_ids.add(b_id)
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
                 row["matchPercentage"] = round(match_score, 2)
                 row["matchedKeyword"] = word.title()
                 partial_results.append(row)
 
-    if partial_results:
-        return sorted(partial_results, key=lambda r: r["matchPercentage"], reverse=True)
+    lexical_results = exact_results + partial_results
 
-    # Layer 2: AI fallback via FAISS similarity over the embedded company text
-    if _index is None:
-        return []
+    # Layer 2: AI fallback via FAISS similarity over the embedded company
+    # text. Previously this only ever ran when BOTH lexical layers came up
+    # completely empty, which meant a single weak exact/partial hit could
+    # hide much better semantic matches from the results. Now it runs
+    # whenever lexical coverage is thin (below
+    # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), and its results are MERGED
+    # into the same ranked list instead of replacing or being blocked by
+    # the lexical ones -- true hybrid scoring.
+    ai_results: list[dict[str, Any]] = []
+    if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
+        model = get_model()
+        query_vector = model.encode([search_term])
+        faiss.normalize_L2(query_vector)
+        distances, indices = state.index.search(query_vector.astype("float32"), k=50)
 
-    model = get_model()
-    query_vector = model.encode([search_term])
-    faiss.normalize_L2(query_vector)
-    distances, indices = _index.search(query_vector.astype("float32"), k=50)
+        for i, idx in enumerate(indices[0]):
+            if idx == -1 or idx >= len(state.companies):
+                continue
+            distance_score = distances[0][i]
+            cosine_sim = 1 - (distance_score / 2)
+            percentage = max(0.0, round(cosine_sim * 100, 2))
+            if percentage < AI_MIN_PERCENTAGE:
+                continue
 
-    ai_results = []
-    seen_names = set()
-    for i, idx in enumerate(indices[0]):
-        if idx == -1 or idx >= len(_companies):
-            continue
-        distance_score = distances[0][i]
-        cosine_sim = 1 - (distance_score / 2)
-        percentage = max(0.0, round(cosine_sim * 100, 2))
-        if percentage < 35.0:
-            continue
+            doc = state.companies[int(idx)]
+            b_id = str(doc.get("businessId", ""))
+            if b_id in seen_ids:
+                continue
 
-        doc = _companies[int(idx)]
-        b_name = str(doc.get("businessName", ""))
-        if b_name in seen_names:
-            continue
-        seen_names.add(b_name)
+            # Middle-confidence band safety net: without at least one
+            # shared word, a same-domain-but-different-thing match
+            # ("cargo" -> a "Car Rental" business) gets dropped here
+            # instead of surfacing on semantic proximity alone.
+            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE and not shares_any_word(
+                search_term, _combined_text(doc)
+            ):
+                continue
 
-        row = dict(doc)
-        row["matchType"] = "AI Similarity Match"
-        row["matchPercentage"] = float(percentage)
-        matched_in_name = get_matching_words(search_term, b_name)
-        row["matchedKeyword"] = (
-            matched_in_name
-            if matched_in_name
-            else f"{get_closest_word(search_term, b_name)} (~AI Match)"
-        )
-        ai_results.append(row)
+            seen_ids.add(b_id)
+            b_name = str(doc.get("businessName", ""))
 
-    return sorted(ai_results, key=lambda r: r["matchPercentage"], reverse=True)
+            row = dict(doc)
+            row["matchType"] = "AI Similarity Match"
+            row["matchPercentage"] = float(percentage)
+            matched_in_name = get_matching_words(search_term, b_name)
+            row["matchedKeyword"] = (
+                matched_in_name
+                if matched_in_name
+                else f"{get_closest_word(search_term, b_name)} (~AI Match)"
+            )
+            ai_results.append(row)
+
+    combined = lexical_results + ai_results
+    return sorted(combined, key=lambda r: r["matchPercentage"], reverse=True)

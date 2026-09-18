@@ -41,31 +41,34 @@ except ValueError:
 async def lifespan(app: FastAPI):
     ensure_dir(UPLOADS_DIR)
 
+    async def _rebuild_all_indexes(log_verb: str) -> None:
+        """Rebuilds all three search indexes CONCURRENTLY instead of one
+        after another. Each build_index() call does its own full SQL read
+        plus (for two of them) sentence-transformer encoding, so awaiting
+        them sequentially -- as the previous version did, each in its own
+        try/except back to back -- meant startup and every hourly refresh
+        took the SUM of all three builds' time instead of roughly the
+        slowest single one. asyncio.gather(..., return_exceptions=True)
+        launches all three at once while preserving the original behavior
+        that one index failing to build/refresh never stops the others."""
+        results = await asyncio.gather(
+            b2b_search.build_index(),
+            b2b_product_search.build_index(),
+            product_search.build_index(),
+            return_exceptions=True,
+        )
+        labels = ["B2B company", "B2B product", "local product"]
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                logger.error(f"Failed to {log_verb} {label} index: {result}")
+
     async def _auto_refresh_indexes():
         """Rebuilds all three search indexes every hour. Only started after
         the initial connect + index-build pass inside _connect() has run."""
         while True:
             await asyncio.sleep(3600)  # 1 hour
             logger.info("Auto-refreshing search indexes in the background...")
-
-            # Each index refreshed independently — same reasoning as in
-            # _connect() below: one index failing to refresh should never
-            # stop the others from refreshing.
-            try:
-                await b2b_search.build_index()
-            except Exception as err:
-                logger.error(f"Failed to refresh B2B company index: {err}")
-
-            try:
-                await b2b_product_search.build_index()
-            except Exception as err:
-                logger.error(f"Failed to refresh B2B product index: {err}")
-
-            try:
-                await product_search.build_index()
-            except Exception as err:
-                logger.error(f"Failed to refresh local product index: {err}")
-
+            await _rebuild_all_indexes("refresh")
             logger.info("Search index refresh pass complete.")
 
     async def _connect():
@@ -85,27 +88,10 @@ async def lifespan(app: FastAPI):
             return  # nothing below can succeed without the model
 
         # Build the in-memory search indexes (B2B companies, B2B product
-        # catalog, AND the brochure-extracted local Products table). Each
-        # gets its own try/except: previously these three awaits shared one
-        # try/except, so an exception in an earlier build (e.g.
-        # b2b_product_search) silently skipped every build after it (e.g.
-        # product_search) — both product indexes would end up empty while
-        # company search kept working, with only one generic error line to
-        # explain why. Now each is independent and logs its own outcome.
-        try:
-            await b2b_search.build_index()
-        except Exception as err:
-            logger.error(f"Failed to build B2B company index: {err}")
-
-        try:
-            await b2b_product_search.build_index()
-        except Exception as err:
-            logger.error(f"Failed to build B2B product index: {err}")
-
-        try:
-            await product_search.build_index()
-        except Exception as err:
-            logger.error(f"Failed to build local product index: {err}")
+        # catalog, AND the brochure-extracted local Products table)
+        # concurrently -- see _rebuild_all_indexes above. One build failing
+        # (e.g. b2b_product_search) no longer delays or skips the others.
+        await _rebuild_all_indexes("build")
 
         # Start the hourly refresh loop regardless of which builds above
         # succeeded — a build that failed this pass gets another chance

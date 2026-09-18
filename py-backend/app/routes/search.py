@@ -13,9 +13,13 @@ router = APIRouter()
 
 
 # ─── 1. Request Body Schema ──────────────────────────────────────────────
-# Accepts pagination parameters from user payload
+# Accepts pagination parameters from user payload. max_length on SearchText
+# caps how much text a single request can push through the vocabulary
+# spell-correction pass (difflib.get_close_matches over the whole catalog
+# vocabulary for every uncached word) -- without a cap, one very long query
+# string is an easy way to burn a disproportionate amount of CPU per request.
 class SearchRequest(BaseModel):
-    SearchText: str = ""
+    SearchText: str = Field(default="", max_length=200)
     PageNo: int = Field(default=1, ge=1)
     PageSize: int = Field(default=10, ge=1, le=100)
     Type: Literal["business", "product", "all"] = "all"
@@ -34,8 +38,17 @@ def _shape_product(row: dict[str, Any]) -> dict[str, Any]:
     row["type"] = "product"
     row["image"] = row.pop("imagePath", None) or None
 
-    if "matchPercentage" not in row or row["matchPercentage"] is None:
-        row["matchPercentage"] = 100.0 if row.get("productName") else 50.0
+    # Every path through the three search_*_sync() functions now always
+    # sets matchPercentage (exact/partial/AI layers all set it explicitly),
+    # so this branch should be unreachable in normal operation. Kept as a
+    # defensive fallback for any future caller that skips the search
+    # pipeline and hands rows to this shaper directly -- but it now
+    # defaults to 0.0 instead of the old 50.0/100.0 guesses. Fabricating a
+    # 100.0 "exact match" score for a row that was never actually scored
+    # would silently pin it to the top of the results; 0.0 just means it
+    # sorts last until something gives it a real score.
+    if row.get("matchPercentage") is None:
+        row["matchPercentage"] = 0.0
 
     # B2B catalog rows (have "productsAndServicesId" — set in
     # b2b_product_search.py) come straight from the company's live
@@ -95,29 +108,38 @@ async def search_unified(body: SearchRequest):
         return _empty_result()
 
     try:
-        combined: list[dict[str, Any]] = []
+        # Each source's search is CPU-bound (regex + FAISS), so it's run
+        # via asyncio.to_thread on the default thread pool. The three
+        # were previously awaited one after another -- company, THEN b2b
+        # product, THEN local product -- so a Type="all" request paid the
+        # full latency of all three back-to-back even though none of them
+        # depends on another's result. asyncio.gather launches all three
+        # (up to) at once instead, so wall-clock time is roughly the
+        # slowest single source rather than the sum of all of them.
+        # return_exceptions=True keeps the previous behavior of one
+        # source's failure never taking down the other two.
+        tasks: list[asyncio.Future] = []
+        task_kinds: list[str] = []  # "company" or "product", parallel to tasks
 
         if body.Type in ("business", "all"):
-            try:
-                company_rows = await asyncio.to_thread(b2b_search.search_companies_sync, q)
-                combined.extend(_shape_company(r) for r in company_rows)
-            except Exception as b2b_company_err:
-                logger.error(f"B2B company search failed: {b2b_company_err}")
+            tasks.append(asyncio.to_thread(b2b_search.search_companies_sync, q))
+            task_kinds.append("company")
 
         if body.Type in ("product", "all"):
-            # 1. Real B2B catalog products
-            try:
-                b2b_product_rows = await asyncio.to_thread(b2b_product_search.search_products_sync, q)
-                combined.extend(_shape_product(r) for r in b2b_product_rows)
-            except Exception as b2b_err:
-                logger.error(f"B2B product search failed: {b2b_err}")
+            tasks.append(asyncio.to_thread(b2b_product_search.search_products_sync, q))
+            task_kinds.append("product")
+            tasks.append(asyncio.to_thread(search_local_products_sync, q))
+            task_kinds.append("product")
 
-            # 2. Local brochure-extracted products
-            try:
-                local_product_rows = await asyncio.to_thread(search_local_products_sync, q)
-                combined.extend(_shape_product(r) for r in local_product_rows)
-            except Exception as local_err:
-                logger.error(f"Local product search failed: {local_err}")
+        results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+
+        combined: list[dict[str, Any]] = []
+        for kind, result in zip(task_kinds, results):
+            if isinstance(result, Exception):
+                logger.error(f"{kind} search failed: {result}")
+                continue
+            shape_fn = _shape_company if kind == "company" else _shape_product
+            combined.extend(shape_fn(r) for r in result)
 
         # Dynamic sort by match percentage
         combined.sort(key=lambda r: r.get("matchPercentage") or 0, reverse=True)
