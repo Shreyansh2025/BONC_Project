@@ -334,16 +334,16 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
     search_term = correct_query(search_term, state.vocabulary)
 
     # Layer 1: exact match against product name / brand / category /
-    # industry. Previously this was NAME ONLY, unlike company search
-    # (which already checked industryName/categoryName). That's the real,
-    # general bug behind "healthcare finds 0 products but 14 businesses":
-    # no product is literally named "Healthcare", but plenty belong to
-    # the "Pharmaceutical Drugs Healthcare" industry -- and that applies
-    # to EVERY category/industry/brand-style query, not just this one
-    # word. contains_loose also matches across a one-word/two-word
+    # industry / city. Previously this was NAME ONLY, unlike company
+    # search (which already checked industryName/categoryName/city).
+    # That's the real, general bug behind "healthcare finds 0 products
+    # but 14 businesses", and separately behind "mobile in dhanbad" and
+    # "mobile in kolkata" returning identical results -- the city word
+    # was being checked against nothing, so it silently contributed zero
+    # filtering. contains_loose also matches across a one-word/two-word
     # spelling difference on either side, and is boundary-safe (a query
     # for "pan" can no longer match "pant"/"panel").
-    exact_fields = ["productName", "brandName", "categoryName", "industryName"]
+    exact_fields = ["productName", "brandName", "categoryName", "industryName", "city"]
     exact_results = []
     # Dedup by productsAndServicesId, not by name -- two different
     # products that happen to share a display name (common across
@@ -363,55 +363,89 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
                 or get_matching_words(search_term, row.get("brandName", ""))
                 or get_matching_words(search_term, row.get("categoryName", ""))
                 or get_matching_words(search_term, row.get("industryName", ""))
+                or get_matching_words(search_term, row.get("city", ""))
             )
             row["matchedKeyword"] = matched or search_term.title()
             exact_results.append(row)
             seen_ids.add(str(doc.get("productsAndServicesId", "")))
 
     # Layer 1.5: partial word match, weighted by which field it hit --
-    # same tiered structure as company search: name beats brand beats
-    # category/industry. Words of length 2 are kept (only true stop
-    # words are dropped) so short but meaningful terms like "AC" or "TV"
-    # can still contribute a partial match.
+    # same tiered structure as company search: name beats city beats
+    # brand beats category/industry. Words of length 2 are kept (only
+    # true stop words are dropped) so short but meaningful terms like
+    # "AC" or "TV" can still contribute a partial match.
     words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
     partial_results: list[dict[str, Any]] = []
 
-    for word_index, word in enumerate(words):
-        position_penalty = word_index * 2.0
-        word_candidates = candidate_indices(word, state.inverted_index, len(state.products))
-        for i in word_candidates:
+    if words:
+        # Union of every word's candidate doc positions -- a doc gets
+        # scored against EVERY query word, not just whichever word's loop
+        # happens to reach it first. The old per-word-independent design
+        # meant the first word to claim a doc (typically the generic one,
+        # "mobile") decided its score and marked it seen -- so a later,
+        # more specific word like a city ("dhanbad") could only ever ADD
+        # docs the first word missed, never demote/filter a same-named
+        # product in the wrong city. That's why "mobile in dhanbad" and
+        # "mobile in kolkata" returned identical results: the city word
+        # was structurally unable to affect the outcome.
+        all_candidates: set[int] = set()
+        for word in words:
+            all_candidates |= candidate_indices(word, state.inverted_index, len(state.products))
+
+        for i in all_candidates:
             doc = state.products[i]
             p_id = str(doc.get("productsAndServicesId", ""))
             if p_id in seen_ids:
                 continue
 
             p_name = str(doc.get("productName", ""))
+            city_text = str(doc.get("city", "")).lower()
             brand_text = str(doc.get("brandName", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
 
-            match_score = 0.0
-            if contains_loose(word, p_name):
-                match_score = 90.0 - position_penalty
-            elif contains_loose(word, brand_text):
-                match_score = 85.0 - position_penalty
-            elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                match_score = 80.0 - position_penalty
+            # Score EACH query word against this doc, then average over
+            # ALL of them (a word that doesn't match contributes 0). A
+            # "Mobile Phone X1" in Delhi now scores (90 + 0) / 2 = 45 for
+            # "mobile dhanbad", while the same product in Dhanbad scores
+            # (90 + 87) / 2 = 88.5 -- matching every word beats matching
+            # only the generic one, instead of the city word being unable
+            # to change the outcome at all.
+            matched_words = []
+            word_scores = []
+            for word in words:
+                score = 0.0
+                if contains_loose(word, p_name):
+                    score = 90.0
+                elif contains_loose(word, city_text):
+                    score = 87.0
+                elif contains_loose(word, brand_text):
+                    score = 85.0
+                elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
+                    score = 80.0
+                word_scores.append(score)
+                if score > 0:
+                    matched_words.append(word)
 
-            # Disabled: this used to jump a match straight to ~99% just
-            # for hitting the FIRST query word, regardless of whether any
-            # other word in a multi-word query matched at all -- see the
-            # identical note in b2b_search.py. Left commented, not
-            # deleted, in case a more careful version is wanted later.
-            # if word_index == 0 and match_score > 0:
-            #     match_score = min(99.0, match_score + 10.0)
+            # Require a MAJORITY of query words to match somewhere, not
+            # just any one of them -- same reasoning as b2b_search.py.
+            # Averaging alone doesn't exclude a doc that only matches the
+            # city, it just demotes it; a product in Kolkata that has no
+            # connection to "mobile" whatsoever still cleared the old flat
+            # >= 10.0 floor via the city match alone. For a 2-word query
+            # this requires BOTH words to be found; for 3+ words it
+            # requires more than half. Single-word queries unaffected.
+            if len(matched_words) < (len(words) // 2 + 1):
+                continue
 
-            if match_score >= 10.0:
+            combined_score = sum(word_scores) / len(words)
+            if combined_score >= 10.0:
                 seen_ids.add(p_id)
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
-                row["matchPercentage"] = round(match_score, 2)
-                row["matchedKeyword"] = word.title()
+                row["matchPercentage"] = round(combined_score, 2)
+                # All the words that actually matched, not just one.
+                row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
 
     lexical_results = exact_results + partial_results

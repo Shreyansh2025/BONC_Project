@@ -348,10 +348,15 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
     partial_results: list[dict[str, Any]] = []
 
-    for word_index, word in enumerate(words):
-        position_penalty = word_index * 2.0
-        word_candidates = candidate_indices(word, state.inverted_index, len(state.companies))
-        for i in word_candidates:
+    if words:
+        # Union of every word's candidate doc positions -- a doc gets
+        # scored against EVERY query word, not just whichever word's loop
+        # happens to reach it first (see below for why that was wrong).
+        all_candidates: set[int] = set()
+        for word in words:
+            all_candidates |= candidate_indices(word, state.inverted_index, len(state.companies))
+
+        for i in all_candidates:
             doc = state.companies[i]
             b_id = str(doc.get("businessId", ""))
             if b_id in seen_ids:
@@ -363,38 +368,58 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             industry_text = str(doc.get("industryName", "")).lower()
             desc_text = str(doc.get("description", "")).lower()
 
-            match_score = 0.0
-            if contains_loose(word, b_name):
-                match_score = 90.0 - position_penalty
-            elif contains_loose(word, city_text):
-                # City match ranked just under name match — a location
-                # word ("bangalore") should narrow results, not just add
-                # noise to the AI embedding the way it did before this
-                # join existed.
-                match_score = 87.0 - position_penalty
-            elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                match_score = 85.0 - position_penalty
-            elif contains_loose(word, desc_text):
-                match_score = 80.0 - position_penalty
+            # Score EACH query word against this doc, then average over
+            # ALL of them (a word that doesn't match contributes 0). This
+            # is what makes "mobile in pune" and "mobile in kolkata"
+            # actually diverge: a "Mobile Solutions Ltd" in Delhi now
+            # scores (90 + 0) / 2 = 45, while "Pune Mobile Traders" in
+            # Pune scores (90 + 87) / 2 = 88.5 -- matching every word
+            # beats matching only the generic one, instead of the city
+            # word being unable to affect the outcome at all (the
+            # previous per-word-independent design's actual bug).
+            matched_words = []
+            word_scores = []
+            for word in words:
+                score = 0.0
+                if contains_loose(word, b_name):
+                    score = 90.0
+                elif contains_loose(word, city_text):
+                    # City match ranked just under name match — a location
+                    # word ("pune") should narrow results, not just add
+                    # noise to the AI embedding the way it did before this
+                    # join existed.
+                    score = 87.0
+                elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
+                    score = 85.0
+                elif contains_loose(word, desc_text):
+                    score = 80.0
+                word_scores.append(score)
+                if score > 0:
+                    matched_words.append(word)
 
-            # Disabled: this used to jump a match straight to ~99% just
-            # for hitting the FIRST query word, regardless of whether any
-            # other word in a multi-word query matched at all. On "Steel
-            # Hinges", a doc matching only "steel" could outrank a doc
-            # matching both words, since the first-word boost alone beat
-            # the second doc's unboosted combined score. Left commented
-            # (not deleted) in case a smaller, more careful version of
-            # this idea is wanted later -- e.g. a boost that only applies
-            # once ALL query words have matched something.
-            # if word_index == 0 and match_score > 0:
-            #     match_score = min(99.0, match_score + 10.0)
+            # Require a MAJORITY of query words to match somewhere, not
+            # just any one of them. Averaging alone (below) only demotes
+            # a doc that matches fewer words -- it doesn't exclude it, so
+            # a furniture business in Kolkata that never mentions "mobile"
+            # anywhere still scored (0 + 87) / 2 = 43.5 from "kolkata"
+            # alone and cleared the old flat >= 10.0 floor. For a 2-word
+            # query this requires BOTH words to be found (a city alone is
+            # no longer enough); for 3+ words it requires more than half.
+            # A single-word query is unaffected (that one word must match,
+            # same as before).
+            if len(matched_words) < (len(words) // 2 + 1):
+                continue
 
-            if match_score >= 10.0:
+            combined_score = sum(word_scores) / len(words)
+            if combined_score >= 10.0:
                 seen_ids.add(b_id)
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
-                row["matchPercentage"] = round(match_score, 2)
-                row["matchedKeyword"] = word.title()
+                row["matchPercentage"] = round(combined_score, 2)
+                # All the words that actually matched, not just one --
+                # e.g. "Mobile, Pune" instead of only "Mobile", so it's
+                # visible in the response which words drove the score.
+                row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
 
     lexical_results = exact_results + partial_results
