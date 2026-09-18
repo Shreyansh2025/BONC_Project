@@ -292,6 +292,17 @@ def correct_word(word: str, vocabulary: Counter) -> str:
     # being forced into a merely-close match.
     CORRECTION_CUTOFF = 0.75
     candidates = difflib.get_close_matches(word, vocabulary.keys(), n=5, cutoff=CORRECTION_CUTOFF)
+
+    # A real typo almost never drops two or more whole characters from a
+    # short word -- "cargo" -> "car" scores EXACTLY 0.75 (the cutoff's own
+    # boundary) despite being a different, unrelated word, because ratio()
+    # doesn't care that "car" is 40% shorter. This guard rejects candidates
+    # that differ too much in length, closing that specific exploit without
+    # touching the 0.75 cutoff itself (e.g. "hinges" -> "hinge", a 1-char
+    # genuine typo/plural difference, still passes).
+    max_len_delta = 1 if len(word) <= 6 else 2
+    candidates = [c for c in candidates if abs(len(c) - len(word)) <= max_len_delta]
+
     if not candidates:
         result = word
     else:
