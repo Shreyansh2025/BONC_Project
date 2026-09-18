@@ -436,7 +436,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 row["matchPercentage"] = round(combined_score, 2)
                 row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
-                
+
     lexical_results = exact_results + partial_results
 
     # Layer 2: AI fallback via FAISS similarity over the embedded company
@@ -447,7 +447,15 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), and its results are MERGED
     # into the same ranked list instead of replacing or being blocked by
     # the lexical ones -- true hybrid scoring.
+    # Layer 2: AI fallback via FAISS similarity over the embedded company text.
     ai_results: list[dict[str, Any]] = []
+    
+    # Filter down to true "core" words (no stop words, filler words, or business types)
+    # so we don't let generic words like "suppliers" or "manufacturers" artificially 
+    # validate a weak AI match.
+    core_query_words = [w for w in words if w not in BUSINESS_TYPE_SYNONYMS]
+    core_query_str = " ".join(core_query_words)
+
     if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
         model = get_model()
         query_vector = model.encode([search_term])
@@ -468,27 +476,48 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             if b_id in seen_ids:
                 continue
 
-            # Middle-confidence band safety net: without at least one
-            # shared word, a same-domain-but-different-thing match
-            # ("cargo" -> a "Car Rental" business) gets dropped here
-            # instead of surfacing on semantic proximity alone.
-            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE and not shares_any_word(
-                search_term, _combined_text(doc)
-            ):
-                continue
+            # Middle-confidence band safety net: require a shared *core* word.
+            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE:
+                doc_text = _combined_text(doc)
+                doc_tokens = set(re.findall(r"\w+", doc_text))
+                
+                # Grab all the words that make up this company's location
+                geo_tokens = set(
+                    str(doc.get("city", "")).lower().split() +
+                    str(doc.get("state", "")).lower().split() +
+                    str(doc.get("country", "")).lower().split()
+                )
+                
+                has_valid_shared_word = False
+                for cw in core_query_words:
+                    if cw in doc_tokens:
+                        # Reject the shared word if it's purely a geographic match.
+                        # This prevents a query for "india" or "new delhi" from validating 
+                        # a bad AI match just because the company is located there.
+                        if cw in geo_tokens:
+                            continue
+                        has_valid_shared_word = True
+                        break
+                
+                if not has_valid_shared_word:
+                    continue
 
             seen_ids.add(b_id)
             b_name = str(doc.get("businessName", ""))
+            c_name = str(doc.get("categoryName", ""))
 
             row = dict(doc)
             row["matchType"] = "AI Similarity Match"
             row["matchPercentage"] = float(percentage)
-            matched_in_name = get_matching_words(search_term, b_name)
-            row["matchedKeyword"] = (
-                matched_in_name
-                if matched_in_name
-                else f"{get_closest_word(search_term, b_name)} (~AI Match)"
+            
+            # Clean up the UI reason: use core words, check name and category, 
+            # and stop showing weird fuzzy-match artifacts like "Private (~AI match)".
+            matched_in_fields = (
+                get_matching_words(core_query_str, b_name) or
+                get_matching_words(core_query_str, c_name)
             )
+            row["matchedKeyword"] = matched_in_fields if matched_in_fields else "Semantic Match"
+            
             ai_results.append(row)
 
     combined = lexical_results + ai_results
