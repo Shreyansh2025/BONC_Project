@@ -369,6 +369,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
 
             b_name = str(doc.get("businessName", "")).lower()
             city_text = str(doc.get("city", "")).lower()
+            state_text = str(doc.get("state", "")).lower()
             country_text = str(doc.get("country", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
@@ -377,27 +378,45 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
 
             matched_words = []
             word_scores = []
-            # True only if some word hit a field that says WHAT this company
-            # sells/is (name/category/industry) — not just where it is or how
-            # it operates. This is the mandatory gate: "resistors suppliers
-            # india" must land on something resistor-related, not just on
-            # "suppliers" (business type) + "india" (country).
             core_matched = False
 
             for word in words:
                 score = 0.0
+                
+                # Check if this word is just acting as a geographic or business-type filter.
+                # If a word is purely a location or a role (like "supplier"), it shouldn't
+                # satisfy the mandatory core product requirement, EVEN IF it happens to
+                # appear in the company's name (e.g., "Global Wood India").
+                is_location = (
+                    contains_loose(word, city_text) or 
+                    contains_loose(word, state_text) or 
+                    contains_loose(word, country_text)
+                )
+                is_biz_type = word in BUSINESS_TYPE_SYNONYMS
+                can_satisfy_core = not is_location and not is_biz_type
+
                 if contains_loose(word, b_name):
-                    score, core_matched = 90.0, True
+                    score = 90.0
+                    if can_satisfy_core:
+                        core_matched = True
                 elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                    score, core_matched = 85.0, True
-                elif contains_loose(word, city_text):
-                    score = 82.0
-                elif matches_business_type(word, business_type_text):
-                    score = 80.0
-                elif contains_loose(word, country_text):
-                    score = 75.0
+                    score = 85.0
+                    if can_satisfy_core:
+                        core_matched = True
+                elif is_location:
+                    if contains_loose(word, city_text):
+                        score = 82.0
+                    elif contains_loose(word, state_text):
+                        score = 80.0
+                    else:
+                        score = 75.0
+                elif is_biz_type:
+                    # Only score if it actually matches THIS doc's real business type
+                    if matches_business_type(word, business_type_text):
+                        score = 80.0
                 elif contains_loose(word, desc_text):
                     score = 70.0
+                    
                 word_scores.append(score)
                 if score > 0:
                     matched_words.append(word)
@@ -417,7 +436,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 row["matchPercentage"] = round(combined_score, 2)
                 row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
-
+                
     lexical_results = exact_results + partial_results
 
     # Layer 2: AI fallback via FAISS similarity over the embedded company
