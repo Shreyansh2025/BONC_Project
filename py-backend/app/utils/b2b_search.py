@@ -61,6 +61,7 @@ from app.utils.search_common import (
     get_matching_words,
     shares_any_word,
     FILLER_WORDS,
+    BUSINESS_TYPE_SYNONYMS,
     matches_business_type,
 )
 
