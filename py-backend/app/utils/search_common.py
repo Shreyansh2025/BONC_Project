@@ -130,31 +130,6 @@ def _tokenize(text: str) -> list[str]:
 
 
 def contains_loose(term: str, target: Any) -> bool:
-    """True if `term` (a word or short phrase) appears in `target` as a
-    whole word / whole phrase, tolerant of a one-word vs multi-word
-    spelling difference on either side, but NEVER as a bare substring of
-    an unrelated longer word.
-
-    Two checks, both boundary-safe:
-
-    1. `term` matches `target_text` at a word boundary on both ends. This
-       is what a plain `term in target_text` check was trying to do, but
-       that old version matched "pan" inside "pant" or "panel" because it
-       never checked what came immediately before/after the match. The
-       lookaround here requires there be no other letter/digit touching
-       either end of the match, so "pan" only matches a real standalone
-       "pan" token (or the edge of a phrase), never a prefix of a longer
-       word.
-
-    2. `term`, with its own spaces stripped, is matched against a run of
-       *whole* target tokens joined together ("air" + "conditioner" ->
-       "airconditioner"). This is still boundary-safe because it only
-       ever concatenates complete tokens — "pan" can't match inside
-       "pant" here either, since "pant" is one whole token, not "pan"
-       plus something else. This is what lets "airconditioner" (typed as
-       one word) match a target field that spells it "Air Conditioner",
-       and vice versa.
-    """
     if not term or not target:
         return False
     term = str(term).lower().strip()
@@ -162,7 +137,11 @@ def contains_loose(term: str, target: Any) -> bool:
         return False
     target_text = str(target).lower()
 
-    pattern = r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])"
+    # Strip trailing 's' so singular queries can match plural database text
+    base_term = term[:-1] if term.endswith('s') and not term.endswith('ss') else term
+    
+    # Match the base word, optionally followed by s, es, or ies
+    pattern = r"(?<![a-z0-9])" + re.escape(base_term) + r"(?:s|es|ies)?(?![a-z0-9])"
     if re.search(pattern, target_text):
         return True
 
@@ -174,9 +153,9 @@ def contains_loose(term: str, target: Any) -> bool:
         joined = ""
         for tok in target_tokens[start:]:
             joined += tok
-            if joined == term_compact:
+            if joined == term_compact or joined == term_compact + "s":
                 return True
-            if len(joined) >= len(term_compact):
+            if len(joined) >= len(term_compact) + 1:
                 break
     return False
 

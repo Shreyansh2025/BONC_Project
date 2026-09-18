@@ -39,6 +39,7 @@ snapshot, whichever build it happens to land on.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -490,13 +491,18 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 
                 has_valid_shared_word = False
                 for cw in core_query_words:
-                    if cw in doc_tokens:
-                        # Reject the shared word if it's purely a geographic match.
-                        # This prevents a query for "india" or "new delhi" from validating 
-                        # a bad AI match just because the company is located there.
-                        if cw in geo_tokens:
-                            continue
-                        has_valid_shared_word = True
+                    # Strip trailing 's' to create a base word (resistors -> resistor)
+                    base_cw = cw[:-1] if cw.endswith('s') and not cw.endswith('ss') else cw
+                    
+                    for dt in doc_tokens:
+                        # Match exact word, or simple plurals (s, es, ies)
+                        if dt == base_cw or dt == base_cw + "s" or dt == base_cw + "es" or dt == base_cw + "ies":
+                            if dt in geo_tokens:
+                                continue
+                            has_valid_shared_word = True
+                            break
+                    
+                    if has_valid_shared_word:
                         break
                 
                 if not has_valid_shared_word:
