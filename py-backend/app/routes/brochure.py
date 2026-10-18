@@ -57,6 +57,23 @@ def _safe_filename(original_name: str) -> str:
     return f"{int(time.time() * 1000)}-{safe}"
 
 
+def _cleanup_failed_upload_artifacts(paths: set[str]) -> set[str]:
+    """Remove request-owned upload files and return paths that remain."""
+    remaining: set[str] = set()
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            logger.warning(
+                "Could not clean upload artifact %s after failed operation (%s)",
+                os.path.basename(path), type(err).__name__,
+            )
+            remaining.add(path)
+    return remaining
+
+
 def _check_image_dimensions(width: int, height: int) -> None:
     if width <= 0 or height <= 0:
         raise HTTPException(status_code=400, detail="Image dimensions are invalid")
@@ -485,11 +502,15 @@ async def preview(file: UploadFile):
         raise HTTPException(status_code=400, detail="No file uploaded")
 
     file_path, ext = await _save_upload(file)
+    generated_artifacts: list[str] = []
 
     try:
         if ext == ".pdf":
             total_pages = get_pdf_page_count(file_path)
-            pages = generate_page_thumbnails(file_path, UPLOADS_DIR, BASE_UPLOADS_URL)
+            pages = generate_page_thumbnails(
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL,
+                created_paths=generated_artifacts,
+            )
             return {
                 "isPdf": True,
                 "totalPages": total_pages,
@@ -507,7 +528,8 @@ async def preview(file: UploadFile):
                 "fileName": file.filename,
             }
     except Exception as err:
-        logger.error(f"Preview error: {err}")
+        _cleanup_failed_upload_artifacts({file_path, *generated_artifacts})
+        logger.error("Brochure preview failed (%s)", type(err).__name__)
         raise HTTPException(status_code=500, detail="Failed to generate preview") from err
 
 
@@ -536,6 +558,10 @@ async def process(
     upload_ext = os.path.splitext(file.filename or "")[1].lower()
     selected_pages = _normalize_selected_pages(selectedPages) if upload_ext == ".pdf" else None
     file_path, ext = await _save_upload(file)
+    cleanup_paths: set[str] = {file_path}
+    generated_artifacts: list[str] = []
+    cleanup_always: set[str] = set()
+    brochure_saved = False
 
     try:
         ocr_pages: list[PageResult] = []
@@ -560,13 +586,15 @@ async def process(
                 else list(range(1, total_pages + 1))
             )
             ocr_pages = generate_ocr_pages(
-                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process,
+                created_paths=generated_artifacts,
             )
             extracted_images = [p.imageUrl for p in ocr_pages]
             # Real embedded photos, grouped by page — used to give each product
             # on a shared page its own actual photo instead of one reused page-crop.
             embedded_by_page = extract_embedded_images(
-                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process,
+                created_paths=generated_artifacts,
             )
         else:
             dest_name = os.path.basename(file_path)
@@ -673,12 +701,14 @@ async def process(
             #    page render.
             region = p.get("imageRegion")
             if region and region not in ("none", "full"):
+                crop_path: str | None = None
                 try:
                     crop_name = (
                         f"prod_{int(time.time() * 1000)}_"
                         f"{''.join(random.choices(string.ascii_lowercase + string.digits, k=5))}.jpg"
                     )
                     crop_path = os.path.join(UPLOADS_DIR, crop_name)
+                    cleanup_paths.add(crop_path)
                     crop_product_image(target_page.buffer, region, crop_path)
                     products_with_images.append(
                         {
@@ -687,8 +717,17 @@ async def process(
                         }
                     )
                     continue
-                except Exception:
-                    pass  # crop failed — fall through to full-page only
+                except Exception as crop_err:
+                    if crop_path is not None:
+                        cleanup_always.update(
+                            _cleanup_failed_upload_artifacts({crop_path})
+                        )
+                        cleanup_paths.discard(crop_path)
+                    logger.warning(
+                        "Product image crop failed; using full-page fallback (%s)",
+                        type(crop_err).__name__,
+                    )
+                    # Preserve the existing fallback to the full page.
 
             # 3) Last resort: the full page.
             products_with_images.append({**p, "images": [full_page_url]})
@@ -708,6 +747,7 @@ async def process(
             extractedImages=extracted_images,
         ).to_row()
         brochure_id = await asyncio.to_thread(_insert_brochure_sync, brochure_row)
+        brochure_saved = True
 
         image_pool = build_image_pool(embedded_by_page, ocr_pages)
 
@@ -731,7 +771,7 @@ async def process(
     except HTTPException:
         raise
     except Exception as err:
-        logger.error(f"Process error: {err}")
+        logger.error("Brochure processing failed (%s)", type(err).__name__)
         return JSONResponse(
             status_code=500,
             content={
@@ -739,6 +779,17 @@ async def process(
                 "error": "Internal processing error",
             },
         )
+    finally:
+        # Generated file paths are recorded before writing, so even an error
+        # inside a renderer leaves enough information to clean partial outputs.
+        cleanup_paths.update(generated_artifacts)
+        # This also runs for request cancellation, where except Exception is
+        # not guaranteed to execute. Once saved, generated image URLs may be
+        # referenced by the database and therefore must be retained.
+        if cleanup_always:
+            _cleanup_failed_upload_artifacts(cleanup_always)
+        if not brochure_saved:
+            _cleanup_failed_upload_artifacts(cleanup_paths)
 
 
 # ─── GET /brochures ─────────────────────────────────────────────────────────────

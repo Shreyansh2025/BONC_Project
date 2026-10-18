@@ -44,6 +44,7 @@ def extract_embedded_images(
     selected_pages: list[int] | None = None,
     min_area: int = 2500,
     max_aspect_ratio: float = 4.0,
+    created_paths: list[str] | None = None,
 ) -> dict[int, list[EmbeddedImage]]:
     """Extract the actual embedded photos from a PDF (not page screenshots),
     grouped by the page they appear on. This mirrors the old pdf-lib XObject
@@ -125,6 +126,8 @@ def extract_embedded_images(
                 counter += 1
                 file_name = f"embedded_{int(time.time() * 1000)}_{counter}.{ext}"
                 file_dest = os.path.join(uploads_dir, file_name)
+                if created_paths is not None:
+                    created_paths.append(file_dest)
                 with open(file_dest, "wb") as f:
                     f.write(image_bytes)
 
@@ -204,6 +207,7 @@ def generate_page_thumbnails(
     uploads_dir: str,
     base_url: str,
     selected_pages: list[int] | None = None,
+    created_paths: list[str] | None = None,
 ) -> list[PageResult]:
     """High quality JPEG thumbnails, scale=2.5 (mirrors pdf-to-img + sharp jpeg q90)."""
     results: list[PageResult] = []
@@ -221,6 +225,8 @@ def generate_page_thumbnails(
             img.save(buf, format="JPEG", quality=90)
             data = buf.getvalue()
 
+            if created_paths is not None:
+                created_paths.append(file_dest)
             with open(file_dest, "wb") as f:
                 f.write(data)
 
@@ -239,6 +245,7 @@ def generate_ocr_pages(
     uploads_dir: str,
     base_url: str,
     selected_pages: list[int],
+    created_paths: list[str] | None = None,
 ) -> list[PageResult]:
     """Highest quality lossless PNG pages for OCR accuracy, scale=3.0."""
     results: list[PageResult] = []
@@ -256,6 +263,8 @@ def generate_ocr_pages(
             img.save(buf, format="PNG")
             data = buf.getvalue()
 
+            if created_paths is not None:
+                created_paths.append(file_dest)
             with open(file_dest, "wb") as f:
                 f.write(data)
 
