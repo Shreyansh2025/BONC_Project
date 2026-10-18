@@ -89,23 +89,75 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
 
 
 def _normalize_selected_pages(raw: str | None) -> list[int] | None:
-    if not raw:
+    """Parse an optional JSON list of one-based page numbers.
+
+    None or an empty form value means no page filter (process every page).
+    If the caller explicitly supplies a selection, reject malformed values
+    instead of silently treating them as no selection and processing the
+    entire PDF.
+    """
+    if raw is None or raw == "":
         return None
+
     try:
         arr = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(arr, list) or len(arr) == 0:
-        return None
-    nums = []
-    for p in arr:
-        try:
-            n = int(p)
-            if n > 0:
-                nums.append(n)
-        except (ValueError, TypeError):
-            continue
-    return nums or None
+    except (json.JSONDecodeError, TypeError) as err:
+        raise HTTPException(
+            status_code=400,
+            detail="selectedPages must be a JSON array of positive integer page numbers",
+        ) from err
+
+    if not isinstance(arr, list) or not arr:
+        raise HTTPException(
+            status_code=400,
+            detail="selectedPages must be a non-empty JSON array of positive integer page numbers",
+        )
+
+    nums: list[int] = []
+    for page in arr:
+        # Preserve compatibility with numeric strings, but reject booleans,
+        # fractional numbers, nulls, objects, and other silently-coercible values.
+        if isinstance(page, bool) or not isinstance(page, (int, str)):
+            raise HTTPException(
+                status_code=400,
+                detail="selectedPages must contain only positive integer page numbers",
+            )
+        if isinstance(page, str):
+            page_text = page.strip()
+            if not page_text or not re.fullmatch(r"[+-]?\d+", page_text):
+                raise HTTPException(
+                    status_code=400,
+                    detail="selectedPages must contain only positive integer page numbers",
+                )
+            page_number = int(page_text)
+        else:
+            page_number = page
+
+        if page_number < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="selectedPages page numbers must be greater than zero",
+            )
+        nums.append(page_number)
+
+    return nums
+
+
+def _validate_selected_pages(selected_pages: list[int] | None, total_pages: int) -> None:
+    """Reject explicit selections that are outside a PDF's one-based page range."""
+    if selected_pages is None:
+        return
+
+    invalid_pages = sorted({page for page in selected_pages if page > total_pages})
+    if invalid_pages:
+        invalid_text = ", ".join(str(page) for page in invalid_pages)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"selectedPages contains page number(s) outside this PDF's range "
+                f"(1-{total_pages}): {invalid_text}"
+            ),
+        )
 
 
 _PRICE_LINE_RE = re.compile(r"(₹|rs\.?|inr|mrp|price|\$)\s*[\d,]", re.IGNORECASE)
@@ -340,7 +392,10 @@ async def process(
         logger.warning(f"Unknown category '{category}' received — falling back to 'General'")
         category = "General"
 
-    selected_pages = _normalize_selected_pages(selectedPages)
+    # Page selection only applies to PDFs. Preserve the existing behavior for
+    # image uploads, for which selectedPages is not used.
+    upload_ext = os.path.splitext(file.filename or "")[1].lower()
+    selected_pages = _normalize_selected_pages(selectedPages) if upload_ext == ".pdf" else None
     file_path, ext = await _save_upload(file)
 
     try:
@@ -348,8 +403,22 @@ async def process(
         extracted_images: list[str] = []
 
         if ext == ".pdf":
-            pages_to_process = selected_pages or list(
-                range(1, get_pdf_page_count(file_path) + 1)
+            total_pages = get_pdf_page_count(file_path)
+            try:
+                _validate_selected_pages(selected_pages, total_pages)
+            except HTTPException:
+                # Do not leave the uploaded source behind when its explicit
+                # page selection is invalid.
+                try:
+                    os.remove(file_path)
+                except OSError as cleanup_err:
+                    logger.warning(f"Could not remove upload after invalid page selection: {cleanup_err}")
+                raise
+
+            pages_to_process = (
+                selected_pages
+                if selected_pages is not None
+                else list(range(1, total_pages + 1))
             )
             ocr_pages = generate_ocr_pages(
                 file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process
