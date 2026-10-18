@@ -30,7 +30,7 @@ from app.utils.image_extractor import (
     get_pdf_page_count,
 )
 from app.utils.ocr_pool import recognize_batch
-from app.utils.product_search import build_index as rebuild_product_search_index
+from app.utils.search_index_client import refresh_local_product_index
 from app.utils.serialize import json_col, serialize_row
 
 router = APIRouter()
@@ -603,13 +603,12 @@ async def save_products(body: dict[str, Any]):
         rows = [ProductCreate(**p).to_row() for p in products]
         saved_docs = await asyncio.to_thread(_insert_products_sync, rows)
 
-        # Rebuild the local product search index so these products (and
-        # any fallback Model/ImagePath/Slug values just written) are
-        # searchable immediately, without waiting for a server restart.
-        try:
-            await rebuild_product_search_index()
-        except Exception as index_err:
-            logger.error(f"Failed to rebuild local product search index: {index_err}")
+        # _insert_products_sync returns only after its SQLAlchemy transaction
+        # context has committed. Search AI owns the in-memory index in the
+        # separated architecture, so request refresh over its internal API.
+        # Keep this public response unchanged if the refresh is temporarily
+        # unavailable; Search AI also performs its periodic full refresh.
+        await refresh_local_product_index(reason="products_saved")
 
         return JSONResponse(
             status_code=201,
@@ -652,11 +651,10 @@ async def delete_product(product_id: str):
         if not found:
             raise HTTPException(status_code=404, detail="Product not found")
 
-        # Keep the search index from serving a deleted product.
-        try:
-            await rebuild_product_search_index()
-        except Exception as index_err:
-            logger.error(f"Failed to rebuild local product search index: {index_err}")
+        # _delete_product_sync returns only after its SQLAlchemy transaction
+        # context has committed. Refresh Search AI over HTTP after that commit.
+        # Preserve the existing public delete response even if refresh is down.
+        await refresh_local_product_index(reason="product_deleted")
 
         return {"message": "Product deleted", "id": product_id}
     except HTTPException:
