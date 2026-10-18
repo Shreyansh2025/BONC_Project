@@ -31,7 +31,7 @@ from app.utils.image_extractor import (
 )
 from app.utils.ocr_pool import recognize_batch
 from app.utils.search_index_client import refresh_local_product_index
-from app.utils.serialize import json_col, serialize_row
+from app.utils.serialize import json_col, serialize_b2b_product_row, serialize_row
 
 router = APIRouter()
 
@@ -263,7 +263,7 @@ def _get_product_sync(id_or_slug: str) -> dict[str, Any] | None:
         b2b_row = conn.execute(
             select(b2b_products_table()).where(b2b_products_table().c.Slug == id_or_slug)
         ).mappings().first()
-        return serialize_row("B2BProducts", b2b_row) if b2b_row else None
+        return serialize_b2b_product_row(b2b_row) if b2b_row else None
 
 def _update_product_images_sync(id_: int, images: list[str]) -> dict[str, Any] | None:
     with get_engine().begin() as conn:
