@@ -4,6 +4,7 @@ import os
 import random
 import re
 import string
+import tempfile
 import time
 from datetime import datetime, timezone
 from io import BytesIO
@@ -39,6 +40,11 @@ from app.utils.serialize import json_col, serialize_b2b_product_row, serialize_r
 router = APIRouter()
 
 BASE_UPLOADS_URL = "/api/uploads"
+# Original PDFs are processing inputs, not public media. Keep them outside the
+# directory mounted at /api/uploads. Generated page images remain in UPLOADS_DIR.
+PRIVATE_PDF_UPLOAD_DIR = os.getenv("PRIVATE_PDF_UPLOAD_DIR") or os.path.join(
+    tempfile.gettempdir(), "bonc_brochureiq_private_uploads"
+)
 ALLOWED_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB, mirrors multer's limits.fileSize
 MAX_IMAGES_PER_PRODUCT = 5
@@ -157,12 +163,21 @@ def _validate_uploaded_file(file_path: str, ext: str) -> None:
         raise HTTPException(status_code=400, detail="Uploaded PDF is invalid or corrupted") from err
 
 
-async def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Validates and saves an upload, returning (file_path, extension).
+def _path_is_within(path: str, root: str) -> bool:
+    """Return True when path resolves to root or one of its descendants."""
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:
+        return False
 
-    The upload is streamed to disk under the existing 50MB cap. Both the file
-    extension and actual file content are checked before any processing starts.
-    Invalid/partial files are removed before returning an error.
+
+async def _save_upload(file: UploadFile) -> tuple[str, str]:
+    """Validate and save an upload, returning (file_path, extension).
+
+    Original PDFs are kept outside the public UPLOADS_DIR static mount because
+    their source contents are not needed by the frontend. Generated page images
+    still use UPLOADS_DIR. Image uploads remain public because their URLs are
+    part of the existing preview/product response contract.
     """
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTS:
@@ -171,12 +186,37 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
             detail=f'Invalid file type "{ext}". Only PDF, JPG, JPEG, PNG allowed.',
         )
 
-    ensure_dir(UPLOADS_DIR)
+    destination_dir = UPLOADS_DIR
+    if ext == ".pdf":
+        if _path_is_within(PRIVATE_PDF_UPLOAD_DIR, UPLOADS_DIR):
+            logger.error("PRIVATE_PDF_UPLOAD_DIR must be outside UPLOADS_DIR")
+            raise HTTPException(status_code=500, detail="PDF upload storage is misconfigured")
+        destination_dir = PRIVATE_PDF_UPLOAD_DIR
+
+    ensure_dir(destination_dir)
+
+    # Restrict private PDF storage on Linux production servers.
+    if ext == ".pdf" and os.name == "posix":
+        try:
+            os.chmod(destination_dir, 0o700)
+        except OSError as err:
+            logger.error(
+                "Could not secure private PDF directory (%s)",
+                type(err).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="PDF upload storage is misconfigured",
+            ) from err
+
     dest_name = _safe_filename(file.filename or "upload")
-    dest_path = os.path.join(UPLOADS_DIR, dest_name)
+    dest_path = os.path.join(destination_dir, dest_name)
     size = 0
     try:
         with open(dest_path, "wb") as out:
+            if ext == ".pdf" and os.name == "posix":
+                os.chmod(dest_path, 0o600)
+
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_FILE_SIZE:
@@ -411,10 +451,13 @@ def _insert_products_sync(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ids = []
         for row in rows:
             # Check if a product with the same name and source file already exists
+            # Include model in the duplicate key so different variants with
+            # the same display name and source brochure are not merged.
             existing = conn.execute(
                 select(products_table().c.Id).where(
                     (products_table().c.ProductName == row["ProductName"]) &
-                    (products_table().c.SourceFileName == row["SourceFileName"])
+                    (products_table().c.SourceFileName == row["SourceFileName"]) &
+                    (products_table().c.Model == row["Model"])
                 )
             ).first()
 
@@ -531,6 +574,11 @@ async def preview(file: UploadFile):
         _cleanup_failed_upload_artifacts({file_path, *generated_artifacts})
         logger.error("Brochure preview failed (%s)", type(err).__name__)
         raise HTTPException(status_code=500, detail="Failed to generate preview") from err
+    finally:
+        # PDFs are private, request-scoped inputs; only generated page images
+        # are retained after a successful preview.
+        if ext == ".pdf":
+            _cleanup_failed_upload_artifacts({file_path})
 
 
 # ─── POST /process ──────────────────────────────────────────────────────────────
@@ -783,6 +831,12 @@ async def process(
         # Generated file paths are recorded before writing, so even an error
         # inside a renderer leaves enough information to clean partial outputs.
         cleanup_paths.update(generated_artifacts)
+        # PDFs are request-scoped private inputs and are never needed after
+        # processing completes, including successful runs. Generated images
+        # are retained after a successful save because their URLs are returned.
+        if ext == ".pdf":
+            _cleanup_failed_upload_artifacts({file_path})
+            cleanup_paths.discard(file_path)
         # This also runs for request cancellation, where except Exception is
         # not guaranteed to execute. Once saved, generated image URLs may be
         # referenced by the database and therefore must be retained.
