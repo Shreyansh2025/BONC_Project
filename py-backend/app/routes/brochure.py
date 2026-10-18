@@ -194,8 +194,7 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
         destination_dir = PRIVATE_PDF_UPLOAD_DIR
 
     ensure_dir(destination_dir)
-
-    # Restrict private PDF storage on Linux production servers.
+    # Restrict private PDF storage on POSIX systems before writing request data.
     if ext == ".pdf" and os.name == "posix":
         try:
             os.chmod(destination_dir, 0o700)
@@ -216,7 +215,6 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
         with open(dest_path, "wb") as out:
             if ext == ".pdf" and os.name == "posix":
                 os.chmod(dest_path, 0o600)
-
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_FILE_SIZE:
@@ -538,6 +536,15 @@ def _parse_id(raw_id: str, not_found_message: str) -> int:
         raise HTTPException(status_code=404, detail=not_found_message)
 
 
+def _internal_error_response(message: str, err: Exception) -> JSONResponse:
+    """Keep database/driver exception details out of public API responses."""
+    logger.error("%s (%s)", message, type(err).__name__)
+    return JSONResponse(
+        status_code=500,
+        content={"message": message, "error": "Internal server error"},
+    )
+
+
 # ─── POST /preview ─────────────────────────────────────────────────────────────
 @router.post("/preview")
 async def preview(file: UploadFile):
@@ -852,10 +859,7 @@ async def list_brochures():
     try:
         return await asyncio.to_thread(_list_brochures_sync)
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching brochures", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching brochures", err)
 
 
 # ─── DELETE /brochures/{id} ──────────────────────────────────────────────────────
@@ -870,10 +874,7 @@ async def delete_brochure(brochure_id: str):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error deleting brochure", "error": str(err)},
-        )
+        return _internal_error_response("Error deleting brochure", err)
 
 
 # ─── GET /products ──────────────────────────────────────────────────────────────
@@ -882,10 +883,7 @@ async def list_products():
     try:
         return await asyncio.to_thread(_list_products_sync)
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching products", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching products", err)
 
 
 # ─── GET /products/{id_or_slug} ─────────────────────────────────────────────────
@@ -903,10 +901,7 @@ async def get_product(id_or_slug: str):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching product", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching product", err)
 
 
 # ─── POST /products ─────────────────────────────────────────────────────────────
@@ -935,11 +930,7 @@ async def save_products(body: dict[str, Any]):
             },
         )
     except Exception as err:
-        logger.error(f"Save products error traceback: {repr(err)}") # Added detailed log
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error saving products", "error": str(err)},
-        )
+        return _internal_error_response("Error saving products", err)
 
 # ─── PATCH /products/{id} ────────────────────────────────────────────────────────
 @router.patch("/products/{product_id}")
@@ -953,10 +944,7 @@ async def update_product_images(product_id: str, body: UpdateProductImages):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error updating product images", "error": str(err)},
-        )
+        return _internal_error_response("Error updating product images", err)
 
 
 # ─── DELETE /products/{id} ───────────────────────────────────────────────────────
@@ -977,7 +965,4 @@ async def delete_product(product_id: str):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error deleting product", "error": str(err)},
-        )
+        return _internal_error_response("Error deleting product", err)
