@@ -6,10 +6,13 @@ import re
 import string
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
+import fitz
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from PIL import Image
 from sqlalchemy import delete, insert, select, update
 
 from app.config import UPLOADS_DIR
@@ -39,31 +42,111 @@ BASE_UPLOADS_URL = "/api/uploads"
 ALLOWED_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB, mirrors multer's limits.fileSize
 MAX_IMAGES_PER_PRODUCT = 5
+# Resource limits for files that are rasterized or passed to OCR/background removal.
+MAX_PDF_PAGES = 100
+MAX_IMAGE_DIMENSION = 10_000
+MAX_IMAGE_PIXELS = 40_000_000
+PDF_RENDER_SCALE = 3.0  # generate_ocr_pages uses scale=3.0
+MAX_RENDERED_PAGE_DIMENSION = 12_000
+MAX_RENDERED_PAGE_PIXELS = 25_000_000
 
 
-@router.post("/remove-background")
-async def remove_bg(file: UploadFile):
-    input_bytes = await file.read()
-
-    output_bytes = await asyncio.to_thread(remove_background, input_bytes)
-
-    ensure_dir(UPLOADS_DIR)
-    dest_name = _safe_filename("bg-removed.png")
-    dest_path = os.path.join(UPLOADS_DIR, dest_name)
-    with open(dest_path, "wb") as out:
-        out.write(output_bytes)
-
-    return JSONResponse({"url": f"{BASE_UPLOADS_URL}/{dest_name}"})
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Upload validation ─────────────────────────────────────────────────────────
 def _safe_filename(original_name: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9.-]", "_", original_name)
     return f"{int(time.time() * 1000)}-{safe}"
 
 
+def _check_image_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Image dimensions are invalid")
+    if max(width, height) > MAX_IMAGE_DIMENSION or width * height > MAX_IMAGE_PIXELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Image dimensions exceed the supported limit "
+                f"({MAX_IMAGE_DIMENSION}px per side and {MAX_IMAGE_PIXELS} total pixels)"
+            ),
+        )
+
+
+def _validate_image_source(source: str | BytesIO, ext: str) -> None:
+    expected_format = "JPEG" if ext in {".jpg", ".jpeg"} else "PNG"
+    try:
+        with Image.open(source) as image:
+            if image.format != expected_format:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File content does not match the {ext} extension",
+                )
+            width, height = image.size
+            _check_image_dimensions(width, height)
+            image.verify()
+    except HTTPException:
+        raise
+    except Image.DecompressionBombError as err:
+        raise HTTPException(
+            status_code=400,
+            detail="Image dimensions exceed the supported limit",
+        ) from err
+    except Exception as err:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded image is invalid or corrupted",
+        ) from err
+
+
+def _validate_uploaded_file(file_path: str, ext: str) -> None:
+    """Validate actual file content and processing resource limits after upload."""
+    if ext != ".pdf":
+        _validate_image_source(file_path, ext)
+        return
+
+    try:
+        with fitz.open(file_path) as doc:
+            if doc.needs_pass:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Password-protected PDFs are not supported",
+                )
+            if doc.page_count < 1:
+                raise HTTPException(status_code=400, detail="PDF contains no pages")
+            if doc.page_count > MAX_PDF_PAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF exceeds the supported limit of {MAX_PDF_PAGES} pages",
+                )
+
+            for page_number, page in enumerate(doc, start=1):
+                width = int(page.rect.width * PDF_RENDER_SCALE)
+                height = int(page.rect.height * PDF_RENDER_SCALE)
+                if (
+                    width <= 0
+                    or height <= 0
+                    or max(width, height) > MAX_RENDERED_PAGE_DIMENSION
+                    or width * height > MAX_RENDERED_PAGE_PIXELS
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"PDF page {page_number} exceeds the supported rendering size "
+                            f"({MAX_RENDERED_PAGE_DIMENSION}px per side and "
+                            f"{MAX_RENDERED_PAGE_PIXELS} total pixels)"
+                        ),
+                    )
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Uploaded PDF is invalid or corrupted") from err
+
+
 async def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Validates and saves an uploaded file, mirroring the multer diskStorage config.
-    Returns (file_path, ext)."""
+    """Validates and saves an upload, returning (file_path, extension).
+
+    The upload is streamed to disk under the existing 50MB cap. Both the file
+    extension and actual file content are checked before any processing starts.
+    Invalid/partial files are removed before returning an error.
+    """
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(
@@ -74,18 +157,74 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
     ensure_dir(UPLOADS_DIR)
     dest_name = _safe_filename(file.filename or "upload")
     dest_path = os.path.join(UPLOADS_DIR, dest_name)
-
     size = 0
-    with open(dest_path, "wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_FILE_SIZE:
-                out.close()
-                os.remove(dest_path)
-                raise HTTPException(status_code=400, detail="File too large (max 50MB)")
-            out.write(chunk)
+    try:
+        with open(dest_path, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail="File too large (max 50MB)")
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        _validate_uploaded_file(dest_path, ext)
+        return dest_path, ext
+    except HTTPException:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        raise
+    except OSError as err:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        logger.exception("Could not save uploaded file")
+        raise HTTPException(status_code=500, detail="Could not save uploaded file") from err
+    except Exception as err:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        logger.exception("Unexpected upload validation failure")
+        raise HTTPException(status_code=500, detail="Could not process uploaded file") from err
 
-    return dest_path, ext
+
+async def _read_limited_image_upload(file: UploadFile) -> bytes:
+    """Read an image upload with the same size/content checks as file uploads."""
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, and PNG images are supported")
+
+    # The upload has already been parsed by FastAPI; read at most one byte
+    # beyond the existing size limit so this route never buffers an unlimited body.
+    image_bytes = await file.read(MAX_FILE_SIZE + 1)
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(image_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 50MB)")
+
+    _validate_image_source(BytesIO(image_bytes), ext)
+    return image_bytes
+
+
+@router.post("/remove-background")
+async def remove_bg(file: UploadFile):
+    input_bytes = await _read_limited_image_upload(file)
+    try:
+        output_bytes = await asyncio.to_thread(remove_background, input_bytes)
+    except Exception as err:
+        logger.exception("Background removal failed")
+        raise HTTPException(status_code=500, detail="Background removal failed") from err
+
+    ensure_dir(UPLOADS_DIR)
+    dest_name = _safe_filename("bg-removed.png")
+    dest_path = os.path.join(UPLOADS_DIR, dest_name)
+    with open(dest_path, "wb") as out:
+        out.write(output_bytes)
+
+    return JSONResponse({"url": f"{BASE_UPLOADS_URL}/{dest_name}"})
 
 
 def _normalize_selected_pages(raw: str | None) -> list[int] | None:
@@ -594,7 +733,11 @@ async def process(
     except Exception as err:
         logger.error(f"Process error: {err}")
         return JSONResponse(
-            status_code=500, content={"message": "Processing failed", "error": str(err)}
+            status_code=500,
+            content={
+                "message": "Processing failed",
+                "error": "Internal processing error",
+            },
         )
 
 
