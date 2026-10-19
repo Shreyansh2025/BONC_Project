@@ -56,6 +56,76 @@ def serialize_row(table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Dedicated serializer for the imported B2B catalog. Keep this separate from
+# _TABLE_FIELDS so the existing Brochures and local Products response shapes
+# remain unchanged. Column names match B2BProducts in sql/schema.sql.
+_B2B_PRODUCT_FIELDS: dict[str, str] = {
+    "Id": "_id",
+    "UniqueId": "productUniqueId",
+    "IndustryName": "industryName",
+    "CategoryName": "categoryName",
+    "SubCategoryName": "subCategoryName",
+    "DispositionName": "dispositionName",
+    "ProductName": "productName",
+    "ItemType": "itemType",
+    "ProductType": "productType",
+    "Description": "description",
+    "ManufacturerName": "manufacturerName",
+    "BrandName": "brandName",
+    "KeyWords": "keyWords",
+    "BusinessName": "businessName",
+    "CustomizedPrice": "customizedPrice",
+    "MinPrice": "minPrice",
+    "MaxPrice": "maxPrice",
+    "ExportCapabilities": "exportCapabilities",
+    "CustomizationAvailability": "customizationAvailability",
+    "ShipsGlobally": "shipsGlobally",
+    "HazardousGoods": "hazardousGoods",
+    "GstPercentage": "gstPercentage",
+    "AverageDeliveryTime": "averageDeliveryTime",
+    "ProcessingTime": "processingTime",
+    "CountryOfOrigin": "countryOfOrigin",
+    "MinimumOrderQuantity": "minimumOrderQuantity",
+    "Status": "status",
+    "PublishDate": "publishDate",
+    "Slug": "slug",
+    "ImagePath": "imagePath",
+}
+
+
+def serialize_b2b_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a B2BProducts SQL row to the API's camelCase product shape.
+
+    The B2B catalog has different columns from brochure-extracted Products,
+    so it must not be passed to serialize_row("Products", ...). The common
+    ``category`` and ``price`` aliases support the existing product-detail
+    shape, while the catalog-specific fields (categoryName, minPrice, etc.)
+    remain available to clients that use the Search AI result schema.
+    """
+    source = dict(row)
+    result: dict[str, Any] = {}
+
+    for sql_column, api_field in _B2B_PRODUCT_FIELDS.items():
+        if sql_column not in source:
+            continue
+        value = _decode_value(source[sql_column], None)
+        if sql_column in ("MinPrice", "MaxPrice") and value is not None:
+            # Search AI's existing result shape exposes these SQL DECIMALs as
+            # JSON numbers, not Decimal objects.
+            value = float(value)
+        result[api_field] = value
+
+    # The test product-detail view's common shape uses category/price, whereas
+    # B2B search results use categoryName/customizedPrice. Return both names
+    # without altering the existing Brochures/Products serializers.
+    if "categoryName" in result:
+        result["category"] = result["categoryName"]
+    if "customizedPrice" in result:
+        result["price"] = result["customizedPrice"]
+
+    return result
+
+
 def _decode_value(value: Any, kind: str | None) -> Any:
     if value is None:
         if kind == "list":

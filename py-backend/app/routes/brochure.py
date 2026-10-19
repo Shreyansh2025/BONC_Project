@@ -4,12 +4,16 @@ import os
 import random
 import re
 import string
+import tempfile
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
+import fitz
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from PIL import Image
 from sqlalchemy import delete, insert, select, update
 
 from app.config import UPLOADS_DIR
@@ -30,22 +34,244 @@ from app.utils.image_extractor import (
     get_pdf_page_count,
 )
 from app.utils.ocr_pool import recognize_batch
-from app.utils.product_search import build_index as rebuild_product_search_index
-from app.utils.serialize import json_col, serialize_row
+from app.utils.search_index_client import refresh_local_product_index
+from app.utils.serialize import json_col, serialize_b2b_product_row, serialize_row
 
 router = APIRouter()
 
 BASE_UPLOADS_URL = "/api/uploads"
+# Original PDFs are processing inputs, not public media. Keep them outside the
+# directory mounted at /api/uploads. Generated page images remain in UPLOADS_DIR.
+PRIVATE_PDF_UPLOAD_DIR = os.getenv("PRIVATE_PDF_UPLOAD_DIR") or os.path.join(
+    tempfile.gettempdir(), "bonc_brochureiq_private_uploads"
+)
 ALLOWED_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB, mirrors multer's limits.fileSize
 MAX_IMAGES_PER_PRODUCT = 5
+# Resource limits for files that are rasterized or passed to OCR/background removal.
+MAX_PDF_PAGES = 100
+MAX_IMAGE_DIMENSION = 10_000
+MAX_IMAGE_PIXELS = 40_000_000
+PDF_RENDER_SCALE = 3.0  # generate_ocr_pages uses scale=3.0
+MAX_RENDERED_PAGE_DIMENSION = 12_000
+MAX_RENDERED_PAGE_PIXELS = 25_000_000
+
+
+# ─── Upload validation ─────────────────────────────────────────────────────────
+def _safe_filename(original_name: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9.-]", "_", original_name)
+    return f"{int(time.time() * 1000)}-{safe}"
+
+
+def _cleanup_failed_upload_artifacts(paths: set[str]) -> set[str]:
+    """Remove request-owned upload files and return paths that remain."""
+    remaining: set[str] = set()
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            logger.warning(
+                "Could not clean upload artifact %s after failed operation (%s)",
+                os.path.basename(path), type(err).__name__,
+            )
+            remaining.add(path)
+    return remaining
+
+
+def _check_image_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Image dimensions are invalid")
+    if max(width, height) > MAX_IMAGE_DIMENSION or width * height > MAX_IMAGE_PIXELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Image dimensions exceed the supported limit "
+                f"({MAX_IMAGE_DIMENSION}px per side and {MAX_IMAGE_PIXELS} total pixels)"
+            ),
+        )
+
+
+def _validate_image_source(source: str | BytesIO, ext: str) -> None:
+    expected_format = "JPEG" if ext in {".jpg", ".jpeg"} else "PNG"
+    try:
+        with Image.open(source) as image:
+            if image.format != expected_format:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File content does not match the {ext} extension",
+                )
+            width, height = image.size
+            _check_image_dimensions(width, height)
+            image.verify()
+    except HTTPException:
+        raise
+    except Image.DecompressionBombError as err:
+        raise HTTPException(
+            status_code=400,
+            detail="Image dimensions exceed the supported limit",
+        ) from err
+    except Exception as err:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded image is invalid or corrupted",
+        ) from err
+
+
+def _validate_uploaded_file(file_path: str, ext: str) -> None:
+    """Validate actual file content and processing resource limits after upload."""
+    if ext != ".pdf":
+        _validate_image_source(file_path, ext)
+        return
+
+    try:
+        with fitz.open(file_path) as doc:
+            if doc.needs_pass:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Password-protected PDFs are not supported",
+                )
+            if doc.page_count < 1:
+                raise HTTPException(status_code=400, detail="PDF contains no pages")
+            if doc.page_count > MAX_PDF_PAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF exceeds the supported limit of {MAX_PDF_PAGES} pages",
+                )
+
+            for page_number, page in enumerate(doc, start=1):
+                width = int(page.rect.width * PDF_RENDER_SCALE)
+                height = int(page.rect.height * PDF_RENDER_SCALE)
+                if (
+                    width <= 0
+                    or height <= 0
+                    or max(width, height) > MAX_RENDERED_PAGE_DIMENSION
+                    or width * height > MAX_RENDERED_PAGE_PIXELS
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"PDF page {page_number} exceeds the supported rendering size "
+                            f"({MAX_RENDERED_PAGE_DIMENSION}px per side and "
+                            f"{MAX_RENDERED_PAGE_PIXELS} total pixels)"
+                        ),
+                    )
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Uploaded PDF is invalid or corrupted") from err
+
+
+def _path_is_within(path: str, root: str) -> bool:
+    """Return True when path resolves to root or one of its descendants."""
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:
+        return False
+
+
+async def _save_upload(file: UploadFile) -> tuple[str, str]:
+    """Validate and save an upload, returning (file_path, extension).
+
+    Original PDFs are kept outside the public UPLOADS_DIR static mount because
+    their source contents are not needed by the frontend. Generated page images
+    still use UPLOADS_DIR. Image uploads remain public because their URLs are
+    part of the existing preview/product response contract.
+    """
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Invalid file type "{ext}". Only PDF, JPG, JPEG, PNG allowed.',
+        )
+
+    destination_dir = UPLOADS_DIR
+    if ext == ".pdf":
+        if _path_is_within(PRIVATE_PDF_UPLOAD_DIR, UPLOADS_DIR):
+            logger.error("PRIVATE_PDF_UPLOAD_DIR must be outside UPLOADS_DIR")
+            raise HTTPException(status_code=500, detail="PDF upload storage is misconfigured")
+        destination_dir = PRIVATE_PDF_UPLOAD_DIR
+
+    ensure_dir(destination_dir)
+    # Restrict private PDF storage on POSIX systems before writing request data.
+    if ext == ".pdf" and os.name == "posix":
+        try:
+            os.chmod(destination_dir, 0o700)
+        except OSError as err:
+            logger.error(
+                "Could not secure private PDF directory (%s)",
+                type(err).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="PDF upload storage is misconfigured",
+            ) from err
+
+    dest_name = _safe_filename(file.filename or "upload")
+    dest_path = os.path.join(destination_dir, dest_name)
+    size = 0
+    try:
+        with open(dest_path, "wb") as out:
+            if ext == ".pdf" and os.name == "posix":
+                os.chmod(dest_path, 0o600)
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail="File too large (max 50MB)")
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        _validate_uploaded_file(dest_path, ext)
+        return dest_path, ext
+    except HTTPException:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        raise
+    except OSError as err:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        logger.exception("Could not save uploaded file")
+        raise HTTPException(status_code=500, detail="Could not save uploaded file") from err
+    except Exception as err:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        logger.exception("Unexpected upload validation failure")
+        raise HTTPException(status_code=500, detail="Could not process uploaded file") from err
+
+
+async def _read_limited_image_upload(file: UploadFile) -> bytes:
+    """Read an image upload with the same size/content checks as file uploads."""
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, and PNG images are supported")
+
+    # The upload has already been parsed by FastAPI; read at most one byte
+    # beyond the existing size limit so this route never buffers an unlimited body.
+    image_bytes = await file.read(MAX_FILE_SIZE + 1)
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(image_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 50MB)")
+
+    _validate_image_source(BytesIO(image_bytes), ext)
+    return image_bytes
 
 
 @router.post("/remove-background")
 async def remove_bg(file: UploadFile):
-    input_bytes = await file.read()
-
-    output_bytes = await asyncio.to_thread(remove_background, input_bytes)
+    input_bytes = await _read_limited_image_upload(file)
+    try:
+        output_bytes = await asyncio.to_thread(remove_background, input_bytes)
+    except Exception as err:
+        logger.exception("Background removal failed")
+        raise HTTPException(status_code=500, detail="Background removal failed") from err
 
     ensure_dir(UPLOADS_DIR)
     dest_name = _safe_filename("bg-removed.png")
@@ -55,57 +281,77 @@ async def remove_bg(file: UploadFile):
 
     return JSONResponse({"url": f"{BASE_UPLOADS_URL}/{dest_name}"})
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-def _safe_filename(original_name: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9.-]", "_", original_name)
-    return f"{int(time.time() * 1000)}-{safe}"
-
-
-async def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Validates and saves an uploaded file, mirroring the multer diskStorage config.
-    Returns (file_path, ext)."""
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTS:
-        raise HTTPException(
-            status_code=400,
-            detail=f'Invalid file type "{ext}". Only PDF, JPG, JPEG, PNG allowed.',
-        )
-
-    ensure_dir(UPLOADS_DIR)
-    dest_name = _safe_filename(file.filename or "upload")
-    dest_path = os.path.join(UPLOADS_DIR, dest_name)
-
-    size = 0
-    with open(dest_path, "wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_FILE_SIZE:
-                out.close()
-                os.remove(dest_path)
-                raise HTTPException(status_code=400, detail="File too large (max 50MB)")
-            out.write(chunk)
-
-    return dest_path, ext
-
 
 def _normalize_selected_pages(raw: str | None) -> list[int] | None:
-    if not raw:
+    """Parse an optional JSON list of one-based page numbers.
+
+    None or an empty form value means no page filter (process every page).
+    If the caller explicitly supplies a selection, reject malformed values
+    instead of silently treating them as no selection and processing the
+    entire PDF.
+    """
+    if raw is None or raw == "":
         return None
+
     try:
         arr = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(arr, list) or len(arr) == 0:
-        return None
-    nums = []
-    for p in arr:
-        try:
-            n = int(p)
-            if n > 0:
-                nums.append(n)
-        except (ValueError, TypeError):
-            continue
-    return nums or None
+    except (json.JSONDecodeError, TypeError) as err:
+        raise HTTPException(
+            status_code=400,
+            detail="selectedPages must be a JSON array of positive integer page numbers",
+        ) from err
+
+    if not isinstance(arr, list) or not arr:
+        raise HTTPException(
+            status_code=400,
+            detail="selectedPages must be a non-empty JSON array of positive integer page numbers",
+        )
+
+    nums: list[int] = []
+    for page in arr:
+        # Preserve compatibility with numeric strings, but reject booleans,
+        # fractional numbers, nulls, objects, and other silently-coercible values.
+        if isinstance(page, bool) or not isinstance(page, (int, str)):
+            raise HTTPException(
+                status_code=400,
+                detail="selectedPages must contain only positive integer page numbers",
+            )
+        if isinstance(page, str):
+            page_text = page.strip()
+            if not page_text or not re.fullmatch(r"[+-]?\d+", page_text):
+                raise HTTPException(
+                    status_code=400,
+                    detail="selectedPages must contain only positive integer page numbers",
+                )
+            page_number = int(page_text)
+        else:
+            page_number = page
+
+        if page_number < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="selectedPages page numbers must be greater than zero",
+            )
+        nums.append(page_number)
+
+    return nums
+
+
+def _validate_selected_pages(selected_pages: list[int] | None, total_pages: int) -> None:
+    """Reject explicit selections that are outside a PDF's one-based page range."""
+    if selected_pages is None:
+        return
+
+    invalid_pages = sorted({page for page in selected_pages if page > total_pages})
+    if invalid_pages:
+        invalid_text = ", ".join(str(page) for page in invalid_pages)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"selectedPages contains page number(s) outside this PDF's range "
+                f"(1-{total_pages}): {invalid_text}"
+            ),
+        )
 
 
 _PRICE_LINE_RE = re.compile(r"(₹|rs\.?|inr|mrp|price|\$)\s*[\d,]", re.IGNORECASE)
@@ -203,10 +449,13 @@ def _insert_products_sync(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ids = []
         for row in rows:
             # Check if a product with the same name and source file already exists
+            # Include model in the duplicate key so different variants with
+            # the same display name and source brochure are not merged.
             existing = conn.execute(
                 select(products_table().c.Id).where(
                     (products_table().c.ProductName == row["ProductName"]) &
-                    (products_table().c.SourceFileName == row["SourceFileName"])
+                    (products_table().c.SourceFileName == row["SourceFileName"]) &
+                    (products_table().c.Model == row["Model"])
                 )
             ).first()
 
@@ -263,7 +512,7 @@ def _get_product_sync(id_or_slug: str) -> dict[str, Any] | None:
         b2b_row = conn.execute(
             select(b2b_products_table()).where(b2b_products_table().c.Slug == id_or_slug)
         ).mappings().first()
-        return serialize_row("B2BProducts", b2b_row) if b2b_row else None
+        return serialize_b2b_product_row(b2b_row) if b2b_row else None
 
 def _update_product_images_sync(id_: int, images: list[str]) -> dict[str, Any] | None:
     with get_engine().begin() as conn:
@@ -287,6 +536,15 @@ def _parse_id(raw_id: str, not_found_message: str) -> int:
         raise HTTPException(status_code=404, detail=not_found_message)
 
 
+def _internal_error_response(message: str, err: Exception) -> JSONResponse:
+    """Keep database/driver exception details out of public API responses."""
+    logger.error("%s (%s)", message, type(err).__name__)
+    return JSONResponse(
+        status_code=500,
+        content={"message": message, "error": "Internal server error"},
+    )
+
+
 # ─── POST /preview ─────────────────────────────────────────────────────────────
 @router.post("/preview")
 async def preview(file: UploadFile):
@@ -294,11 +552,15 @@ async def preview(file: UploadFile):
         raise HTTPException(status_code=400, detail="No file uploaded")
 
     file_path, ext = await _save_upload(file)
+    generated_artifacts: list[str] = []
 
     try:
         if ext == ".pdf":
             total_pages = get_pdf_page_count(file_path)
-            pages = generate_page_thumbnails(file_path, UPLOADS_DIR, BASE_UPLOADS_URL)
+            pages = generate_page_thumbnails(
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL,
+                created_paths=generated_artifacts,
+            )
             return {
                 "isPdf": True,
                 "totalPages": total_pages,
@@ -316,8 +578,14 @@ async def preview(file: UploadFile):
                 "fileName": file.filename,
             }
     except Exception as err:
-        logger.error(f"Preview error: {err}")
+        _cleanup_failed_upload_artifacts({file_path, *generated_artifacts})
+        logger.error("Brochure preview failed (%s)", type(err).__name__)
         raise HTTPException(status_code=500, detail="Failed to generate preview") from err
+    finally:
+        # PDFs are private, request-scoped inputs; only generated page images
+        # are retained after a successful preview.
+        if ext == ".pdf":
+            _cleanup_failed_upload_artifacts({file_path})
 
 
 # ─── POST /process ──────────────────────────────────────────────────────────────
@@ -340,25 +608,48 @@ async def process(
         logger.warning(f"Unknown category '{category}' received — falling back to 'General'")
         category = "General"
 
-    selected_pages = _normalize_selected_pages(selectedPages)
+    # Page selection only applies to PDFs. Preserve the existing behavior for
+    # image uploads, for which selectedPages is not used.
+    upload_ext = os.path.splitext(file.filename or "")[1].lower()
+    selected_pages = _normalize_selected_pages(selectedPages) if upload_ext == ".pdf" else None
     file_path, ext = await _save_upload(file)
+    cleanup_paths: set[str] = {file_path}
+    generated_artifacts: list[str] = []
+    cleanup_always: set[str] = set()
+    brochure_saved = False
 
     try:
         ocr_pages: list[PageResult] = []
         extracted_images: list[str] = []
 
         if ext == ".pdf":
-            pages_to_process = selected_pages or list(
-                range(1, get_pdf_page_count(file_path) + 1)
+            total_pages = get_pdf_page_count(file_path)
+            try:
+                _validate_selected_pages(selected_pages, total_pages)
+            except HTTPException:
+                # Do not leave the uploaded source behind when its explicit
+                # page selection is invalid.
+                try:
+                    os.remove(file_path)
+                except OSError as cleanup_err:
+                    logger.warning(f"Could not remove upload after invalid page selection: {cleanup_err}")
+                raise
+
+            pages_to_process = (
+                selected_pages
+                if selected_pages is not None
+                else list(range(1, total_pages + 1))
             )
             ocr_pages = generate_ocr_pages(
-                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process,
+                created_paths=generated_artifacts,
             )
             extracted_images = [p.imageUrl for p in ocr_pages]
             # Real embedded photos, grouped by page — used to give each product
             # on a shared page its own actual photo instead of one reused page-crop.
             embedded_by_page = extract_embedded_images(
-                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process
+                file_path, UPLOADS_DIR, BASE_UPLOADS_URL, pages_to_process,
+                created_paths=generated_artifacts,
             )
         else:
             dest_name = os.path.basename(file_path)
@@ -465,12 +756,14 @@ async def process(
             #    page render.
             region = p.get("imageRegion")
             if region and region not in ("none", "full"):
+                crop_path: str | None = None
                 try:
                     crop_name = (
                         f"prod_{int(time.time() * 1000)}_"
                         f"{''.join(random.choices(string.ascii_lowercase + string.digits, k=5))}.jpg"
                     )
                     crop_path = os.path.join(UPLOADS_DIR, crop_name)
+                    cleanup_paths.add(crop_path)
                     crop_product_image(target_page.buffer, region, crop_path)
                     products_with_images.append(
                         {
@@ -479,8 +772,17 @@ async def process(
                         }
                     )
                     continue
-                except Exception:
-                    pass  # crop failed — fall through to full-page only
+                except Exception as crop_err:
+                    if crop_path is not None:
+                        cleanup_always.update(
+                            _cleanup_failed_upload_artifacts({crop_path})
+                        )
+                        cleanup_paths.discard(crop_path)
+                    logger.warning(
+                        "Product image crop failed; using full-page fallback (%s)",
+                        type(crop_err).__name__,
+                    )
+                    # Preserve the existing fallback to the full page.
 
             # 3) Last resort: the full page.
             products_with_images.append({**p, "images": [full_page_url]})
@@ -500,6 +802,7 @@ async def process(
             extractedImages=extracted_images,
         ).to_row()
         brochure_id = await asyncio.to_thread(_insert_brochure_sync, brochure_row)
+        brochure_saved = True
 
         image_pool = build_image_pool(embedded_by_page, ocr_pages)
 
@@ -523,10 +826,31 @@ async def process(
     except HTTPException:
         raise
     except Exception as err:
-        logger.error(f"Process error: {err}")
+        logger.error("Brochure processing failed (%s)", type(err).__name__)
         return JSONResponse(
-            status_code=500, content={"message": "Processing failed", "error": str(err)}
+            status_code=500,
+            content={
+                "message": "Processing failed",
+                "error": "Internal processing error",
+            },
         )
+    finally:
+        # Generated file paths are recorded before writing, so even an error
+        # inside a renderer leaves enough information to clean partial outputs.
+        cleanup_paths.update(generated_artifacts)
+        # PDFs are request-scoped private inputs and are never needed after
+        # processing completes, including successful runs. Generated images
+        # are retained after a successful save because their URLs are returned.
+        if ext == ".pdf":
+            _cleanup_failed_upload_artifacts({file_path})
+            cleanup_paths.discard(file_path)
+        # This also runs for request cancellation, where except Exception is
+        # not guaranteed to execute. Once saved, generated image URLs may be
+        # referenced by the database and therefore must be retained.
+        if cleanup_always:
+            _cleanup_failed_upload_artifacts(cleanup_always)
+        if not brochure_saved:
+            _cleanup_failed_upload_artifacts(cleanup_paths)
 
 
 # ─── GET /brochures ─────────────────────────────────────────────────────────────
@@ -535,10 +859,7 @@ async def list_brochures():
     try:
         return await asyncio.to_thread(_list_brochures_sync)
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching brochures", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching brochures", err)
 
 
 # ─── DELETE /brochures/{id} ──────────────────────────────────────────────────────
@@ -553,10 +874,7 @@ async def delete_brochure(brochure_id: str):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error deleting brochure", "error": str(err)},
-        )
+        return _internal_error_response("Error deleting brochure", err)
 
 
 # ─── GET /products ──────────────────────────────────────────────────────────────
@@ -565,10 +883,7 @@ async def list_products():
     try:
         return await asyncio.to_thread(_list_products_sync)
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching products", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching products", err)
 
 
 # ─── GET /products/{id_or_slug} ─────────────────────────────────────────────────
@@ -586,10 +901,7 @@ async def get_product(id_or_slug: str):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error fetching product", "error": str(err)},
-        )
+        return _internal_error_response("Error fetching product", err)
 
 
 # ─── POST /products ─────────────────────────────────────────────────────────────
@@ -603,13 +915,12 @@ async def save_products(body: dict[str, Any]):
         rows = [ProductCreate(**p).to_row() for p in products]
         saved_docs = await asyncio.to_thread(_insert_products_sync, rows)
 
-        # Rebuild the local product search index so these products (and
-        # any fallback Model/ImagePath/Slug values just written) are
-        # searchable immediately, without waiting for a server restart.
-        try:
-            await rebuild_product_search_index()
-        except Exception as index_err:
-            logger.error(f"Failed to rebuild local product search index: {index_err}")
+        # _insert_products_sync returns only after its SQLAlchemy transaction
+        # context has committed. Search AI owns the in-memory index in the
+        # separated architecture, so request refresh over its internal API.
+        # Keep this public response unchanged if the refresh is temporarily
+        # unavailable; Search AI also performs its periodic full refresh.
+        await refresh_local_product_index(reason="products_saved")
 
         return JSONResponse(
             status_code=201,
@@ -619,11 +930,7 @@ async def save_products(body: dict[str, Any]):
             },
         )
     except Exception as err:
-        logger.error(f"Save products error traceback: {repr(err)}") # Added detailed log
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error saving products", "error": str(err)},
-        )
+        return _internal_error_response("Error saving products", err)
 
 # ─── PATCH /products/{id} ────────────────────────────────────────────────────────
 @router.patch("/products/{product_id}")
@@ -637,10 +944,7 @@ async def update_product_images(product_id: str, body: UpdateProductImages):
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error updating product images", "error": str(err)},
-        )
+        return _internal_error_response("Error updating product images", err)
 
 
 # ─── DELETE /products/{id} ───────────────────────────────────────────────────────
@@ -652,17 +956,13 @@ async def delete_product(product_id: str):
         if not found:
             raise HTTPException(status_code=404, detail="Product not found")
 
-        # Keep the search index from serving a deleted product.
-        try:
-            await rebuild_product_search_index()
-        except Exception as index_err:
-            logger.error(f"Failed to rebuild local product search index: {index_err}")
+        # _delete_product_sync returns only after its SQLAlchemy transaction
+        # context has committed. Refresh Search AI over HTTP after that commit.
+        # Preserve the existing public delete response even if refresh is down.
+        await refresh_local_product_index(reason="product_deleted")
 
         return {"message": "Product deleted", "id": product_id}
     except HTTPException:
         raise
     except Exception as err:
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Error deleting product", "error": str(err)},
-        )
+        return _internal_error_response("Error deleting product", err)

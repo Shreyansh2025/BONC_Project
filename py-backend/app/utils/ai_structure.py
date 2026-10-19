@@ -122,11 +122,9 @@ async def _process_chunk(
     )
 
     if response.status_code >= 400:
-        # Truncate the response body before logging — the full body could
-        # contain echoed request headers (including the Authorization key)
-        # in some error responses from Groq.
-        safe_body = response.text[:500] if response.text else "(empty)"
-        raise RuntimeError(f"Groq API error {response.status_code}: {safe_body}")
+        # Do not include the provider's response body in exceptions or logs.
+        # Error bodies are external content and may contain sensitive details.
+        raise RuntimeError(f"Groq API request failed with HTTP {response.status_code}")
 
     data = response.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content")
