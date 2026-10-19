@@ -61,15 +61,34 @@ async def lifespan(app: FastAPI):
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
                 logger.error(f"Failed to {log_verb} {label} index: {result}")
+        return any(isinstance(result, Exception) for result in results)
 
     async def _auto_refresh_indexes():
-        """Rebuilds all three search indexes every hour. Only started after
-        the initial connect + index-build pass inside _connect() has run."""
+        """Refresh indexes hourly and retry a failed refresh once."""
         while True:
-            await asyncio.sleep(3600)  # 1 hour
+            await asyncio.sleep(3600)
             logger.info("Auto-refreshing search indexes in the background...")
-            await _rebuild_all_indexes("refresh")
-            logger.info("Search index refresh pass complete.")
+
+            failed = await _rebuild_all_indexes("refresh")
+
+            if not failed:
+                logger.info("Search index refresh pass complete.")
+                continue
+
+            logger.warning(
+                "Index refresh failed; retrying the full refresh in 60 seconds."
+            )
+            await asyncio.sleep(60)
+
+            retry_failed = await _rebuild_all_indexes("retry refresh")
+
+            if retry_failed:
+                logger.error(
+                    "Index refresh retry failed; the next scheduled refresh "
+                    "will occur in about one hour."
+                )
+            else:
+                logger.info("Search index refresh retry succeeded.")
 
     async def _connect():
         """Connects to SQL Server, warms up the embedding model, builds all

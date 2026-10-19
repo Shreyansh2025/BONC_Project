@@ -184,7 +184,10 @@ _PRODUCT_SQL = text(
         ON u.UserRowId = c.UserRowId AND ISNULL(u.IsDeleted, 0) = 0
     LEFT JOIN RankedMedia img
         ON img.EntityTypeId = p.ProductsAndServicesId AND img.rn = 1
-    WHERE ISNULL(p.IsDeleted, 0) = 0 AND p.Status = 'Publish'
+    WHERE ISNULL(p.IsDeleted, 0) = 0
+      AND p.Status = 'Publish'
+      AND c.Status = 'Verified'
+      AND ISNULL(c.IsDeleted, 0) = 0
     """
 )
 
