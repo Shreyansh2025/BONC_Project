@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.utils.serialize import json_col
 
 CATEGORIES = [
+    "General",
     "Medical",
     "Electronics",
     "Tractor",
