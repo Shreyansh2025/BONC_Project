@@ -39,6 +39,7 @@ snapshot, whichever build it happens to land on.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,11 +61,13 @@ from app.utils.search_common import (
     get_closest_word,
     get_matching_words,
     shares_any_word,
+    FILLER_WORDS,
+    BUSINESS_TYPE_SYNONYMS,
+    matches_business_type,
 )
 
 STOP_WORDS = {
-    "in", "at", "near", "and", "for", "the", "of", "to", "company",
-    "ltd", "pvt", "limited", "private", "enterprises", "industries",
+    "in", "at", "near", "and", "for", "the", "of", "to",
 }
 
 # Once the exact + partial (lexical) layers already turned up at least
@@ -345,56 +348,94 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # -- the old `len(w) > 2` cutoff silently dropped real short product/
     # business terms like "AC" or "TV" from ever contributing a partial
     # match.
-    words = [w for w in search_term.split() if len(w) >= 2 and w not in STOP_WORDS]
+    words = [
+        w for w in search_term.split()
+        if len(w) >= 2 and w not in STOP_WORDS and w not in FILLER_WORDS
+    ]
     partial_results: list[dict[str, Any]] = []
 
-    for word_index, word in enumerate(words):
-        position_penalty = word_index * 2.0
-        word_candidates = candidate_indices(word, state.inverted_index, len(state.companies))
-        for i in word_candidates:
+    if words:
+        # Union of every word's candidate doc positions -- a doc gets
+        # scored against EVERY query word, not just whichever word's loop
+        # happens to reach it first.
+        all_candidates: set[int] = set()
+        for word in words:
+            all_candidates |= candidate_indices(word, state.inverted_index, len(state.companies))
+
+        for i in all_candidates:
             doc = state.companies[i]
             b_id = str(doc.get("businessId", ""))
             if b_id in seen_ids:
                 continue
 
-            b_name = str(doc.get("businessName", ""))
+            b_name = str(doc.get("businessName", "")).lower()
             city_text = str(doc.get("city", "")).lower()
+            state_text = str(doc.get("state", "")).lower()
+            country_text = str(doc.get("country", "")).lower()
             cat_text = str(doc.get("categoryName", "")).lower()
             industry_text = str(doc.get("industryName", "")).lower()
+            business_type_text = str(doc.get("businessTypeName", "")).lower()
             desc_text = str(doc.get("description", "")).lower()
 
-            match_score = 0.0
-            if contains_loose(word, b_name):
-                match_score = 90.0 - position_penalty
-            elif contains_loose(word, city_text):
-                # City match ranked just under name match — a location
-                # word ("bangalore") should narrow results, not just add
-                # noise to the AI embedding the way it did before this
-                # join existed.
-                match_score = 87.0 - position_penalty
-            elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
-                match_score = 85.0 - position_penalty
-            elif contains_loose(word, desc_text):
-                match_score = 80.0 - position_penalty
+            matched_words = []
+            word_scores = []
+            core_matched = False
 
-            # Disabled: this used to jump a match straight to ~99% just
-            # for hitting the FIRST query word, regardless of whether any
-            # other word in a multi-word query matched at all. On "Steel
-            # Hinges", a doc matching only "steel" could outrank a doc
-            # matching both words, since the first-word boost alone beat
-            # the second doc's unboosted combined score. Left commented
-            # (not deleted) in case a smaller, more careful version of
-            # this idea is wanted later -- e.g. a boost that only applies
-            # once ALL query words have matched something.
-            # if word_index == 0 and match_score > 0:
-            #     match_score = min(99.0, match_score + 10.0)
+            for word in words:
+                score = 0.0
+                
+                # Check if this word is just acting as a geographic or business-type filter.
+                # If a word is purely a location or a role (like "supplier"), it shouldn't
+                # satisfy the mandatory core product requirement, EVEN IF it happens to
+                # appear in the company's name (e.g., "Global Wood India").
+                is_location = (
+                    contains_loose(word, city_text) or 
+                    contains_loose(word, state_text) or 
+                    contains_loose(word, country_text)
+                )
+                is_biz_type = word in BUSINESS_TYPE_SYNONYMS
+                can_satisfy_core = not is_location and not is_biz_type
 
-            if match_score >= 10.0:
+                if contains_loose(word, b_name):
+                    score = 90.0
+                    if can_satisfy_core:
+                        core_matched = True
+                elif contains_loose(word, cat_text) or contains_loose(word, industry_text):
+                    score = 85.0
+                    if can_satisfy_core:
+                        core_matched = True
+                elif is_location:
+                    if contains_loose(word, city_text):
+                        score = 82.0
+                    elif contains_loose(word, state_text):
+                        score = 80.0
+                    else:
+                        score = 75.0
+                elif is_biz_type:
+                    # Only score if it actually matches THIS doc's real business type
+                    if matches_business_type(word, business_type_text):
+                        score = 80.0
+                elif contains_loose(word, desc_text):
+                    score = 70.0
+                    
+                word_scores.append(score)
+                if score > 0:
+                    matched_words.append(word)
+
+            # Mandatory: at least one real product/category word must match.
+            if not core_matched:
+                continue
+            # Majority: most of the remaining (non-filler) words must match too.
+            if len(matched_words) < (len(words) // 2 + 1):
+                continue
+
+            combined_score = sum(word_scores) / len(words)
+            if combined_score >= 10.0:
                 seen_ids.add(b_id)
                 row = dict(doc)
                 row["matchType"] = "Partial Word Match"
-                row["matchPercentage"] = round(match_score, 2)
-                row["matchedKeyword"] = word.title()
+                row["matchPercentage"] = round(combined_score, 2)
+                row["matchedKeyword"] = ", ".join(w.title() for w in matched_words)
                 partial_results.append(row)
 
     lexical_results = exact_results + partial_results
@@ -407,7 +448,15 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), and its results are MERGED
     # into the same ranked list instead of replacing or being blocked by
     # the lexical ones -- true hybrid scoring.
+    # Layer 2: AI fallback via FAISS similarity over the embedded company text.
     ai_results: list[dict[str, Any]] = []
+    
+    # Filter down to true "core" words (no stop words, filler words, or business types)
+    # so we don't let generic words like "suppliers" or "manufacturers" artificially 
+    # validate a weak AI match.
+    core_query_words = [w for w in words if w not in BUSINESS_TYPE_SYNONYMS]
+    core_query_str = " ".join(core_query_words)
+
     if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
         model = get_model()
         query_vector = model.encode([search_term])
@@ -428,27 +477,53 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             if b_id in seen_ids:
                 continue
 
-            # Middle-confidence band safety net: without at least one
-            # shared word, a same-domain-but-different-thing match
-            # ("cargo" -> a "Car Rental" business) gets dropped here
-            # instead of surfacing on semantic proximity alone.
-            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE and not shares_any_word(
-                search_term, _combined_text(doc)
-            ):
-                continue
+            # Middle-confidence band safety net: require a shared *core* word.
+            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE:
+                doc_text = _combined_text(doc)
+                doc_tokens = set(re.findall(r"\w+", doc_text))
+                
+                # Grab all the words that make up this company's location
+                geo_tokens = set(
+                    str(doc.get("city", "")).lower().split() +
+                    str(doc.get("state", "")).lower().split() +
+                    str(doc.get("country", "")).lower().split()
+                )
+                
+                has_valid_shared_word = False
+                for cw in core_query_words:
+                    # Strip trailing 's' to create a base word (resistors -> resistor)
+                    base_cw = cw[:-1] if cw.endswith('s') and not cw.endswith('ss') else cw
+                    
+                    for dt in doc_tokens:
+                        # Match exact word, or simple plurals (s, es, ies)
+                        if dt == base_cw or dt == base_cw + "s" or dt == base_cw + "es" or dt == base_cw + "ies":
+                            if dt in geo_tokens:
+                                continue
+                            has_valid_shared_word = True
+                            break
+                    
+                    if has_valid_shared_word:
+                        break
+                
+                if not has_valid_shared_word:
+                    continue
 
             seen_ids.add(b_id)
             b_name = str(doc.get("businessName", ""))
+            c_name = str(doc.get("categoryName", ""))
 
             row = dict(doc)
             row["matchType"] = "AI Similarity Match"
             row["matchPercentage"] = float(percentage)
-            matched_in_name = get_matching_words(search_term, b_name)
-            row["matchedKeyword"] = (
-                matched_in_name
-                if matched_in_name
-                else f"{get_closest_word(search_term, b_name)} (~AI Match)"
+            
+            # Clean up the UI reason: use core words, check name and category, 
+            # and stop showing weird fuzzy-match artifacts like "Private (~AI match)".
+            matched_in_fields = (
+                get_matching_words(core_query_str, b_name) or
+                get_matching_words(core_query_str, c_name)
             )
+            row["matchedKeyword"] = matched_in_fields if matched_in_fields else "Semantic Match"
+            
             ai_results.append(row)
 
     combined = lexical_results + ai_results
