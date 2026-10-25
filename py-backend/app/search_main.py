@@ -18,13 +18,13 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
-from app.db import connect_sql_server  # noqa: E402
-from app.logger import logger  # noqa: E402
-from app.routes.health import search_router as search_health_router  # noqa: E402
-from app.routes.internal import router as internal_router  # noqa: E402
-from app.routes.search import router as search_router  # noqa: E402
-from app.utils import b2b_product_search, b2b_search, product_search  # noqa: E402
-from app.utils.embedding_model import warm_up_model  # noqa: E402
+from app.shared.db import connect_sql_server  # noqa: E402
+from app.shared.logger import logger  # noqa: E402
+from app.search_ai.routes.health import router as search_health_router  # noqa: E402
+from app.search_ai.routes.internal import router as internal_router  # noqa: E402
+from app.search_ai.routes.search import router as search_router  # noqa: E402
+from app.search_ai.services import b2b_product_search, b2b_search, product_search  # noqa: E402
+from app.search_ai.services.embedding_model import warm_up_model  # noqa: E402
 
 
 _raw_port = os.getenv("PORT", "8002")

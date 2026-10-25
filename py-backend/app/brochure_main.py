@@ -19,12 +19,12 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-from app.config import UPLOADS_DIR  # noqa: E402
-from app.db import connect_sql_server  # noqa: E402
-from app.logger import logger  # noqa: E402
-from app.routes.brochure import router as brochure_router  # noqa: E402
-from app.utils.bg_remover import warm_up as warm_up_bg_remover  # noqa: E402
-from app.utils.image_extractor import ensure_dir  # noqa: E402
+from app.brochureiq.config import UPLOADS_DIR  # noqa: E402
+from app.shared.db import connect_sql_server  # noqa: E402
+from app.shared.logger import logger  # noqa: E402
+from app.brochureiq.routes.brochure import router as brochure_router  # noqa: E402
+from app.brochureiq.services.bg_remover import warm_up as warm_up_bg_remover  # noqa: E402
+from app.brochureiq.services.image_extractor import ensure_dir  # noqa: E402
 
 
 _raw_port = os.getenv("PORT", "8003")

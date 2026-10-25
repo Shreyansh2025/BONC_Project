@@ -1,17 +1,6 @@
-import logging
-import os
-import sys
+"""Backward-compatible import path; implementation lives in app.shared.logger."""
+import importlib as _importlib
+import sys as _sys
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logger = logging.getLogger("api-server")
-logger.setLevel(LOG_LEVEL)
-
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+_implementation = _importlib.import_module("app.shared.logger")
+_sys.modules[__name__] = _implementation

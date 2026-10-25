@@ -1,3 +1,6 @@
-import os
+"""Backward-compatible import path; implementation lives in app.brochureiq.config."""
+import importlib as _importlib
+import sys as _sys
 
-UPLOADS_DIR = os.getenv("UPLOADS_DIR") or os.path.join(os.getcwd(), "uploads")
+_implementation = _importlib.import_module("app.brochureiq.config")
+_sys.modules[__name__] = _implementation

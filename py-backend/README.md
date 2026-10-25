@@ -78,16 +78,29 @@ reference, including the brochure extraction and product library endpoints.
 
 ## Project structure
 
+The backend now contains two standalone service implementations plus the retained
+legacy combined entry point for rollback compatibility:
+
 ```
 app/
-├── main.py            # App entrypoint
-├── config.py           # Environment configuration
-├── db.py                # Database connection
-├── models.py            # Request/response schemas
-├── routes/               # API endpoints
-└── utils/                 # OCR, AI extraction, image processing, search
-sql/
-├── schema.sql            # Table definitions
-└── migrations/            # Incremental schema changes
+├── search_main.py          # Standalone Search AI entry point (port 8002 by service config)
+├── brochure_main.py        # Standalone BrochureIQ entry point (port 8003 by service config)
+├── main.py                 # Legacy combined app; retained for rollback
+├── search_ai/
+│   ├── routes/             # Search and internal index-refresh APIs
+│   └── services/           # B2B/local product indexes, embeddings, search logic
+├── brochureiq/
+│   ├── routes/             # Brochure processing and product-library APIs
+│   ├── services/           # OCR, extraction, image processing, Search AI client
+│   ├── config.py           # Upload configuration
+│   └── models.py           # Brochure/product request and response schemas
+├── shared/                 # SQL Server connection, logging, serialization
+├── routes/                 # Legacy import-compatibility modules + combined health route
+└── utils/                  # Legacy import-compatibility modules
+sql/                        # Table definitions and migrations
 scripts/                    # Data import scripts
 ```
+
+The old `app.routes.*`, `app.utils.*`, `app.db`, `app.logger`, `app.config`, and
+`app.models` import paths are retained as compatibility shims so the combined
+app and existing tests can continue to work while service code is organized by domain.
