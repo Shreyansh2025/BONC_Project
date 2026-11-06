@@ -1,6 +1,6 @@
 # BONC Search AI — Project Checkpoint
 
-**Last updated:** 26 October 2026  
+**Last updated:** 6 November 2026
 **Purpose:** Single living handoff document for project status, technical decisions, verified behavior, known risks, and next steps. Update this after every major task. Keep it practical and moderately detailed.
 
 ---
@@ -34,7 +34,7 @@ Long-term goals:
 - Active working branch: `staging`
 - Latest known refactor commit: `d9f6ff9` — `refactor: separate Search AI and BrochureIQ modules`
 - That commit was pushed to `origin/staging` and fast-forwarded on Contabo staging.
-- The user manually copied the Search AI admin frontend ZIP into a sibling folder. Frontend commit `4b3452a` (`feat: add Search AI admin playground`) now exists locally on `staging`; it has **not been confirmed pushed** to `origin/staging`.
+- The user manually copied the Search AI admin frontend ZIP into a sibling folder. Frontend commit `4b3452a` (`feat: add Search AI admin playground`) was created on `staging`. The user later reported pushing the accumulated staging commits to GitHub after the checkpoint documentation commit; this is user-reported and has not been independently checked in a fresh `git status` output.
 - The user ran `npm install` in the repository root. It succeeded and reported 11 vulnerabilities (2 moderate, 9 high); the suggested `npm audit fix --force` was not run.
 - Workspace commands failed because the user's local setup came from manually copying the ZIP rather than applying the patch that adds it to the root npm workspaces. For now, treat `search-ai-admin` as a standalone package and run npm commands inside that folder unless the repository workspace setup is deliberately changed.
 
@@ -218,10 +218,10 @@ Initial editable values should be limited to semantic candidate count, lexical-r
 - Adds `py-backend/app/search_ai/settings.py` with immutable Pydantic settings groups for company, B2B catalogue products and BrochureIQ-local products. Defaults match the reviewed source: candidate limit `50`, lexical trigger `20`, company `35/60`, B2B product `40/65`, local-product minimum `10`.
 - Adds `py-backend/tests/test_search_settings_model.py` for defaults, bounds, relational threshold validation, unknown fields and immutability.
 - User-reported local verification: focused settings tests passed **6/6**; full backend suite passed **72/72** (`Ran 72 tests ... OK`). Error/warning log messages appeared from test cases intentionally exercising failure paths; they did not fail the suite.
-- The two settings-schema files were committed separately on local branch `staging` as **`5906f05 feat: add search rules settings model`**. The prior frontend commit is **`4b3452a feat: add Search AI admin playground`**. These local commits have not been confirmed pushed to GitHub, and neither has been deployed to Contabo.
+- The two settings-schema files were committed separately on branch `staging` as **`5906f05 feat: add search rules settings model`**. The prior frontend commit is **`4b3452a feat: add Search AI admin playground`**. The user subsequently reported pushing the accumulated staging commits to GitHub; the push has not been independently inspected. Neither change was deployed to Contabo as part of the local commit steps.
 - This is schema-only. It does not change live search behavior, wire settings into search functions, add API endpoints, add persistence/authentication, or touch Contabo.
 - Frontend verification: user's `npm run typecheck` passed and `npm run build` succeeded with Vite 7.3.7.
-- Latest user-reported `git status --short`: `M react-frontend/vite.config.ts` and `?? search-ai-settings-model.patch`. The unrelated Vite config edit remains untouched. The patch file is now an applied patch artifact and must not be staged as project source.
+- This is a historical status note from before the BrochureIQ proxy and documentation commits. The settings patch was applied locally; it should not be staged as source. The user later reported a clean working tree after committing the BrochureIQ staging proxy and checkpoint documentation, then reported pushing to GitHub. Obtain a fresh `git status -sb` before future code changes.
 
 **Next immediate task:** design the protected settings API before implementing it. Confirm the actual staging source baseline (`git rev-parse HEAD`) when resuming, then choose persistence and authentication deliberately. Do not build the Search Rules screen until the backend endpoints can return and apply real settings. Keep production untouched.
 
@@ -265,7 +265,7 @@ Clearly mark items as **verified**, **reported by user**, **planned**, or **unkn
 - The user tested the host's OpenAPI/Swagger output: `/openapi.json` returned HTTP 200; it listed `GET /api/healthz`, `POST /api/preview`, `POST /api/process`, and other BrochureIQ endpoints. Swagger `GET /api/healthz` returned `200` with `{"status":"ok"}`. `GET /api/preview` returned `405` with `Allow: POST`, as expected for a POST-only endpoint.
 - The hostname `aistageapi-staging.boncnetwork.com` did not resolve from the user's machine; do not use it unless DNS is configured.
 - The working tree is clean and the standalone patch artifact no longer appears in `git status`; it was not committed as source code.
-- **Not yet done/verified:** The three local commits have not been confirmed pushed to GitHub. No Contabo deployment or production change was performed as part of this local commit. The exact hash of the newest Vite-config commit was not included in the user's latest output.
+- The user later reported pushing the accumulated staging commits to GitHub after the documentation commit; this is user-reported and not independently verified. No Contabo deployment or production change was performed as part of the local frontend commit.
 - **Next decision:** If these three commits are ready to share with the team, push `staging` to `origin`; this is a Git publication step, not a production deployment. Keep the backend settings API as the next development milestone, with production left untouched.
 
 ### Search settings source audit — defaults mapped to current implementation (27 October 2026)
@@ -287,3 +287,111 @@ Clearly mark items as **verified**, **reported by user**, **planned**, or **unkn
 The settings model remains a passive, validated schema. It is not connected to search execution and does not change behavior, persist values, expose API endpoints, or handle administrator authentication. No settings API or storage layer has been implemented yet.
 
 **Next step:** put this same living checkpoint inside the repository at `docs/SEARCH_AI_PROJECT_CHECKPOINT.md` (do not create a second project plan), then design the protected settings API and its persistence/authentication deliberately. Verify the actual local Git HEAD before making further code changes if the branch has moved. Production remains untouched.
+
+### Search evaluation — Set A production run reviewed (27 October 2026)
+
+**Source files inspected:** `SearchAI_100_Search_Run_Summary.csv`, `SearchAI_100_Search_Results.csv`, and `SearchAI_100_Search_Raw.jsonl`, collected by the user from the production `POST https://aiapi.boncnetwork.com/api/search` endpoint. The query list is a broad initial smoke/evaluation set, not a fully catalogue-verified or human-labelled benchmark.
+
+**Collection and cross-file integrity (verified from the uploaded files):**
+- 100 query-summary records, 100 raw JSONL responses, and 712 flattened result rows.
+- All 100 responses were HTTP 200 and all 100 raw response payloads reported `Success: true`.
+- 95 queries returned at least one result; 5 queries returned no results.
+- Total results returned: 712, with up to 10 results requested per query.
+- Median client-observed response time: about 944 ms; mean about 1,015 ms; 90th percentile about 1,331 ms; slowest about 1,993 ms.
+- Per-query result counts agree between summary, raw `Data` arrays and flattened results. Summary top-result names agree with rank 1 in the results CSV. Seven result-name fields had whitespace-only differences when compared to the raw API payload; no row-count mismatches were found.
+- Match-type counts across returned rows: 95 `Exact Match`, 263 `Partial Word Match`, 354 `AI Similarity Match`. These labels/scores are not human relevance judgements and must not be presented as an accuracy metric.
+
+**High-priority review candidates (not yet ground-truth labels):**
+- Q002 `centrifugal pump` top result was `30g 2% Clotrimazole Vaginal Gel` (`AI Similarity Match`, score ~42.6): likely unrelated result.
+- Q006 `fire fighting pump` ranked `Schneider Electric Fire Alarm Sensor` first while `Gasoline Water Pump` appeared second.
+- Q019 `stainless steel pipe` returned a stainless-steel kitchen sink and furniture, suggesting broad material-word matching.
+- Q021 `carbon steel sheet` returned a towel rod, binding wires and nails.
+- Q034 `industrial boiler` returned an electric kettle and coffee machines among top results.
+- Q044 `PLC controller` returned LED lighting controllers with score 87.5, suggesting conflation of different controller types.
+- Q045 `pressure sensor` returned a pressure cooker first; Q046 `flow meter` returned a welding regulator; Q047 `pressure gauge` returned a pressure cooker and welding regulators.
+- Q050 `industrial packaging machine` returned generic machinery such as a drill/blast machine.
+- Q069 `hydraulic hose suppliers` returned generic “House” businesses; investigate possible hose/house spelling correction or overly generic token matches.
+- Q080 `industrial lubrication suppliers` returned aluminium/fabrication/fastener businesses, with a matched keyword containing “Fabrication”; investigate possible correction/ranking errors.
+- Q090 `centrifugal punp` (typo) returned no results. Q094 `electric moter` returned an induction cooktop and blender.
+- Q036 `CNC lathe` has `Exact Match` and score 100 on a displayed result called `Venus Hand Tool`, in a CNC Machines category. Inspect which indexed fields drive the match type/score; this does not by itself prove the implementation is wrong, but it warrants field-level review.
+- Q098 `spaceship engine for Mars habitat` returned no results; that is likely a positive negative-test outcome. Q011 `rotary screw air compressor`, Q014 `servo motor`, and Q043 `VFD drive` require catalogue/index coverage checks before being classified as search failures.
+
+**Likely positive examples to preserve and verify:** typo queries Q089 `chiar` returned `High Back Office Chair`; Q091 `submerisble pump` returned `Submersible Pump Control Unit`; and Q092 `hydralic pump` returned `Hydraulic Pump Motor Parts`. These are plausible recoveries but should still receive a human relevance label.
+
+**Conclusion:** the run completed cleanly at the API/collection level, but actual search accuracy cannot be computed from HTTP status, match score or result count alone. The result sample contains several plausible false positives and ranking failures that deserve human review. Do not tune thresholds or fine-tune a model based on this report alone.
+
+**Next step:** use the generated review workbook `SearchAI_SetA_Run_Analysis.xlsx` as a working aid (it is a separate analysis artifact, not yet committed to the repo). Review the flagged queries and label the top 5–10 results as Relevant / Partly relevant / Irrelevant / Unsure. Then calculate metrics such as Precision@5 and NDCG@10 on labelled queries, review the new catalogue-grounded Set B separately, and only then choose fixes. No search code or model was changed during this evaluation.
+
+**Git note:** the user reported that the accumulated `staging` commits (including the checkpoint commit) were pushed to GitHub. No fresh Git status was supplied after the live query collection; verify `git status -sb` before the next code change. Production was queried for search reads, but no search data or settings were modified by the collector.
+
+## 11. Current status and next work — 6 November 2026
+
+### Verified Git/repository state (user-provided terminal output)
+
+- Local repository path: `D:\Study\Internships\Costipro\Project\BONC_Project-staging-separated\BONC_Project-staging`.
+- Branch: `staging`.
+- Latest observed HEAD and `origin/staging`: `bf01e7d docs: add Search AI project checkpoint`.
+- Latest observed `git status -sb`: `## staging...origin/staging` (clean and in sync at that time).
+- The user has since created the following new backend files as empty placeholders. This is user-reported; the current file contents/status have not yet been inspected:
+  - `py-backend/app/search_ai/services/settings_store.py`
+  - `py-backend/app/search_ai/routes/settings.py`
+  - `py-backend/sql/migrations/003_create_search_ai_settings.sql`
+  - `py-backend/tests/test_search_settings_store.py`
+  - `py-backend/tests/test_search_settings_api.py`
+- **Important path correction:** the existing backend test directory in this repository is `py-backend/tests/`, not a top-level `tests/` directory. Place both new test files there.
+- These placeholders are not implementations yet. Do not add empty files to a commit; implement and test each in small steps.
+- The user does not want changes to `react-frontend/` as part of this Search AI Admin task. Work on `py-backend/` first; the separate `search-ai-admin/` UI can be connected after the API is real.
+
+### Staging SQL Server permission check (user-provided SSMS screenshot)
+
+- The user queried `RN_BoncNetwork_Staging` in SSMS.
+- The query reported `CanCreateTable = 1` and `CanCreateSchema = 1` for the connected database principal.
+- The user saw no rows when querying for an existing `searchai` schema or tables named like `SearchAI%` / `SearchSettings%`; this indicates no matching objects were found by that query in the selected database at that time.
+- This does **not yet prove** that the Contabo `bonc-search-ai-staging.service` uses the same `RN_BoncNetwork_Staging` database. Before applying DDL, verify the service's effective `APP_ENV` and staging SQL connection target without printing credentials or the full connection string.
+- Do not use a highly privileged interactive DBA login as the long-running FastAPI application's database identity. Use a dedicated least-privilege application user after setup.
+- No schema or tables have been created yet. Production database has not been changed.
+
+### Proposed Search AI settings database design (planned; not implemented)
+
+- Keep all existing `dbo` catalogue/application tables intact. The settings work is additive and must not rename, move, delete or rewrite existing tables.
+- Proposed separate schema: `searchai`.
+- Proposed tables:
+  - `searchai.SearchAISettings` — stores the current effective settings, version and update metadata.
+  - `searchai.SearchAISettingsHistory` — append-only snapshots/change metadata for audit and rollback.
+- Use the existing SQL Server infrastructure for staging if the Search AI staging service is confirmed to connect to `RN_BoncNetwork_Staging` and the schema change is approved. No new VPS, FastAPI service, port or database server is required.
+- Initial settings are the seven validated values already defined in `app/search_ai/settings.py`: semantic candidate limit 50; lexical result threshold 20; company semantic minimum/high-confidence 35/60; B2B product semantic minimum/high-confidence 40/65; local-product semantic minimum 10. Preserve defaults until measured tests justify changes.
+- Planned APIs: `GET /api/admin/search-settings`, `PUT /api/admin/search-settings` with optimistic version checking, and `GET /api/admin/search-settings/history`. A rollback should create a new version/history entry rather than deleting history.
+- Use a dedicated admin authentication mechanism/credential, separate from `SEARCH_INTERNAL_API_TOKEN`. Never expose a secret in Vite `VITE_*` variables or browser JavaScript.
+- Settings must be applied consistently across all Search AI workers/processes. Inspect the active Gunicorn worker count and process model before choosing the runtime refresh mechanism.
+
+### Deferred backend cleanup — legacy B2B catalogue tables (not yet done)
+
+The user explicitly wants this work tracked and completed later. **Do not forget this backlog; do not drop either physical table now.**
+
+- `dbo.B2BCompanies`: current Search AI company index is sourced from BONC's master `Company` table and its related joins, not from `B2BCompanies`. The old table is a legacy catalogue dependency candidate for retirement. Before removing its runtime reflection/accessor or import script, search the entire repository and confirm there are no other application consumers, scheduled jobs, views, stored procedures or external consumers.
+- `dbo.B2BProducts`: current Search AI B2B product index is sourced from BONC's master `ProductsAndServices` table and related joins, not from `B2BProducts`. However, the BrochureIQ product-detail lookup (`_get_product_sync()` in `app/brochureiq/routes/brochure.py` in the reviewed source) still has a fallback lookup against `B2BProducts`, and a B2B product serializer remains. Migrate and test that fallback against `ProductsAndServices` before removing the code dependency.
+- `dbo.Brochures`: keep; active BrochureIQ table.
+- `dbo.Products`: keep; BrochureIQ's local/extracted product library and Search AI local-product index source.
+- Cleanup sequence after/alongside settings work, but as its own reviewed milestone:
+  1. Reconfirm current references in the actual staging checkout.
+  2. Migrate BrochureIQ B2B product detail fallback to the BONC master `ProductsAndServices` source, preserving response shape and media/company/category fields.
+  3. Add regression tests for master-table B2B product detail and existing local `Products` detail behavior.
+  4. Remove `B2BCompanies` and `B2BProducts` runtime reflection/accessors only after all in-repository callers are removed.
+  5. Mark/retire legacy import scripts and update SQL schema/migration docs.
+  6. Check row counts, foreign keys, SQL views/procedures, scheduled jobs and other application consumers. Keep physical tables until a data owner approves archival/drop.
+- This cleanup is not a prerequisite for creating the new `searchai` settings schema. The new configuration tables are separate from the existing `dbo` data tables.
+
+### Immediate next task
+
+1. Verify the exact paths and current Git status of the five user-created placeholder files. Ensure tests are under `py-backend/tests/`.
+2. Verify that the running Search AI staging service actually targets `RN_BoncNetwork_Staging` (inspect `bonc-search-ai-staging.service` and its environment-file references; do not print secrets or connection strings).
+3. Review the SQL migration file before running it. Only after the target database is confirmed should the staging migration create the `searchai` schema and the two settings tables.
+4. Implement `settings_store.py`, protected Settings routes, router registration and tests incrementally. Do not change the search service constants until the settings store/API is tested and the runtime application strategy is defined.
+5. Keep production untouched. Do not modify `react-frontend/` for this task.
+
+### Search evaluation datasets (context)
+
+- Set A (general/broad queries): 100 API requests, 712 returned results.
+- Set B (BONC-oriented researched queries): 100 API requests, 688 returned results.
+- Combined: 200 requests and 1,400 returned results. API/collection integrity checks passed for both sets.
+- These results are not a measured accuracy score. Human relevance labels are still pending; keep the original raw JSONL, results CSV, summary CSV and combined evaluation workbook as the baseline evidence.
