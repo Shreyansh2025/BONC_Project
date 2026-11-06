@@ -36,6 +36,7 @@ from sqlalchemy import select
 
 from app.shared.db import get_engine, products_table
 from app.shared.logger import logger
+from app.search_ai.settings import SearchRulesSettings
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
 from app.shared.serialize import serialize_row
 from app.search_ai.services.search_common import (
@@ -54,10 +55,8 @@ STOP_WORDS = {
     "ltd", "pvt", "limited", "private", "enterprises", "industries",
 }
 
-# See the identical constant in b2b_search.py: below this many lexical
-# (exact + partial) hits, the AI/FAISS layer also runs and its results are
-# merged in rather than skipped or blocked by an early return.
-MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI = 20
+# Runtime search thresholds are supplied by the persisted SearchRulesSettings.
+
 
 
 @dataclass(frozen=True)
@@ -148,10 +147,13 @@ async def build_index() -> None:
     logger.info(f"Local product search index built with {len(docs)} products")
 
 
-def search_products_sync(query: str) -> list[dict[str, Any]]:
+def search_products_sync(
+    query: str, settings: SearchRulesSettings | None = None
+) -> list[dict[str, Any]]:
     """Runs the exact -> partial -> AI-fallback hybrid search over the
     in-memory local product cache. CPU-bound — call via asyncio.to_thread
     from the route."""
+    settings = settings or SearchRulesSettings()
     state = _state  # one consistent snapshot for the whole call
     search_term = clean_term(query)
     if not search_term or not state.products:
@@ -235,15 +237,15 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
 
     # Layer 2: AI fallback via FAISS similarity over the embedded product
     # text. Now runs whenever lexical coverage is thin (below
-    # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), merged into the same ranked
+    # settings.lexical_result_threshold), merged into the same ranked
     # list instead of being blocked outright by any single exact/partial
     # hit — see the matching note in b2b_search.py.
     ai_results: list[dict[str, Any]] = []
-    if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
+    if len(lexical_results) < settings.lexical_result_threshold and state.index is not None:
         model = get_model()
         query_vector = model.encode([search_term])
         faiss.normalize_L2(query_vector)
-        distances, indices = state.index.search(query_vector.astype("float32"), k=50)
+        distances, indices = state.index.search(query_vector.astype("float32"), k=settings.semantic_candidate_limit)
 
         for i, idx in enumerate(indices[0]):
             if idx == -1 or idx >= len(state.products):
@@ -251,7 +253,7 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             distance_score = distances[0][i]
             cosine_sim = 1 - (distance_score / 2)
             percentage = max(0.0, round(cosine_sim * 100, 2))
-            if percentage < 10.0:
+            if percentage < settings.local_product.semantic_min_score:
                 continue
 
             doc = state.products[int(idx)]
@@ -275,5 +277,7 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
     return sorted(combined, key=lambda r: r["matchPercentage"], reverse=True)
 
 
-async def search_products(query: str) -> list[dict[str, Any]]:
-    return await asyncio.to_thread(search_products_sync, query)
+async def search_products(
+    query: str, settings: SearchRulesSettings | None = None
+) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(search_products_sync, query, settings)

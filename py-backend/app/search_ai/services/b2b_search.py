@@ -50,6 +50,7 @@ from sqlalchemy import text
 
 from app.shared.db import get_engine
 from app.shared.logger import logger
+from app.search_ai.settings import SearchRulesSettings
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
 from app.search_ai.services.search_common import (
     build_inverted_index,
@@ -70,37 +71,8 @@ STOP_WORDS = {
     "in", "at", "near", "and", "for", "the", "of", "to",
 }
 
-# Once the exact + partial (lexical) layers already turned up at least
-# this many results, skip the FAISS/AI layer entirely for this request --
-# there's already ample coverage and the extra embedding + similarity
-# search would only add latency for little relevance benefit. Below this
-# count (including the common "0 lexical results" case that used to be
-# the ONLY time AI ran), AI results are computed and MERGED in alongside
-# the lexical ones instead of being skipped outright. This is the fix for
-# "Early Return Relevance Killer": previously ANY exact or partial hit,
-# even a single weak one, fully prevented the AI layer from ever running.
-MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI = 20
+# Runtime search thresholds are supplied by the persisted SearchRulesSettings.
 
-# AI/FAISS layer confidence bands (company search). Below
-# AI_MIN_PERCENTAGE, a result is dropped outright -- unrelated. Between
-# AI_MIN_PERCENTAGE and AI_HIGH_CONFIDENCE_PERCENTAGE, the embedding
-# thinks it's "somewhat related" but that band is exactly where two
-# things in the same broad domain (e.g. "cargo" and a "Car Rental
-# Services" business -- both transport-related, no word in common) can
-# score highly enough to slip through on semantics alone. So in that
-# middle band, a result also needs to share at least one literal word
-# with the query (see shares_any_word in search_common.py) to be kept.
-# At or above AI_HIGH_CONFIDENCE_PERCENTAGE the match is trusted on
-# semantics alone, no shared word required -- this is what still lets a
-# genuine typo or synonym ("chiar" already gets spell-corrected, but a
-# true synonym the vocabulary doesn't know) through.
-#
-# There's no labeled test data behind these two exact numbers yet --
-# they're a conservative starting split, not a tuned threshold. If real
-# examples of good/bad AI matches turn up, these are the two numbers to
-# adjust first.
-AI_MIN_PERCENTAGE = 35.0
-AI_HIGH_CONFIDENCE_PERCENTAGE = 60.0
 
 
 @dataclass(frozen=True)
@@ -295,11 +267,14 @@ def _contains_term(doc: dict[str, Any], term: str, fields: list[str]) -> bool:
     return any(contains_loose(term, doc.get(f, "")) for f in fields)
 
 
-def search_companies_sync(query: str) -> list[dict[str, Any]]:
+def search_companies_sync(
+    query: str, settings: SearchRulesSettings | None = None
+) -> list[dict[str, Any]]:
     """Runs the exact -> partial -> AI-fallback hybrid search over the
     in-memory company cache. CPU-bound (regex + FAISS + embedding) — call
     this via asyncio.to_thread from the route so it doesn't block the
     event loop."""
+    settings = settings or SearchRulesSettings()
     state = _state  # one consistent snapshot for the whole call
     search_term = clean_term(query)
     if not search_term or not state.companies:
@@ -445,7 +420,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     # completely empty, which meant a single weak exact/partial hit could
     # hide much better semantic matches from the results. Now it runs
     # whenever lexical coverage is thin (below
-    # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), and its results are MERGED
+    # settings.lexical_result_threshold), and its results are MERGED
     # into the same ranked list instead of replacing or being blocked by
     # the lexical ones -- true hybrid scoring.
     # Layer 2: AI fallback via FAISS similarity over the embedded company text.
@@ -457,11 +432,11 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
     core_query_words = [w for w in words if w not in BUSINESS_TYPE_SYNONYMS]
     core_query_str = " ".join(core_query_words)
 
-    if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
+    if len(lexical_results) < settings.lexical_result_threshold and state.index is not None:
         model = get_model()
         query_vector = model.encode([search_term])
         faiss.normalize_L2(query_vector)
-        distances, indices = state.index.search(query_vector.astype("float32"), k=50)
+        distances, indices = state.index.search(query_vector.astype("float32"), k=settings.semantic_candidate_limit)
 
         for i, idx in enumerate(indices[0]):
             if idx == -1 or idx >= len(state.companies):
@@ -469,7 +444,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
             distance_score = distances[0][i]
             cosine_sim = 1 - (distance_score / 2)
             percentage = max(0.0, round(cosine_sim * 100, 2))
-            if percentage < AI_MIN_PERCENTAGE:
+            if percentage < settings.company.semantic_min_score:
                 continue
 
             doc = state.companies[int(idx)]
@@ -478,7 +453,7 @@ def search_companies_sync(query: str) -> list[dict[str, Any]]:
                 continue
 
             # Middle-confidence band safety net: require a shared *core* word.
-            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE:
+            if percentage < settings.company.semantic_high_confidence_score:
                 doc_text = _combined_text(doc)
                 doc_tokens = set(re.findall(r"\w+", doc_text))
 

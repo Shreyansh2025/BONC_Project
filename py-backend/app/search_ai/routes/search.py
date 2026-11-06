@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.shared.logger import logger
-from app.search_ai.services import b2b_product_search, b2b_search
+from app.search_ai.services import b2b_product_search, b2b_search, settings_store
 from app.search_ai.services.product_search import search_products_sync as search_local_products_sync
 
 router = APIRouter()
@@ -108,6 +108,28 @@ async def search_unified(body: SearchRequest):
         return _empty_result()
 
     try:
+        # Read the committed SQL Server settings once per public request.
+        # This makes admin changes visible on the next request in every
+        # Gunicorn worker without relying on per-process in-memory caches.
+        try:
+            settings_record = await asyncio.to_thread(settings_store.get_current_settings)
+            runtime_settings = settings_record["settings"]
+        except Exception as settings_error:
+            logger.error(
+                "Search settings unavailable (exception_type=%s)",
+                type(settings_error).__name__,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "Success": False,
+                    "Message": "Search configuration unavailable",
+                    "Type": "error",
+                    "Data": [],
+                    "TotalCount": 0,
+                },
+            )
+
         # Each source's search is CPU-bound (regex + FAISS), so it's run
         # via asyncio.to_thread on the default thread pool. The three
         # were previously awaited one after another -- company, THEN b2b
@@ -122,13 +144,13 @@ async def search_unified(body: SearchRequest):
         task_kinds: list[str] = []  # "company" or "product", parallel to tasks
 
         if body.Type in ("business", "all"):
-            tasks.append(asyncio.to_thread(b2b_search.search_companies_sync, q))
+            tasks.append(asyncio.to_thread(b2b_search.search_companies_sync, q, runtime_settings))
             task_kinds.append("company")
 
         if body.Type in ("product", "all"):
-            tasks.append(asyncio.to_thread(b2b_product_search.search_products_sync, q))
+            tasks.append(asyncio.to_thread(b2b_product_search.search_products_sync, q, runtime_settings))
             task_kinds.append("product")
-            tasks.append(asyncio.to_thread(search_local_products_sync, q))
+            tasks.append(asyncio.to_thread(search_local_products_sync, q, runtime_settings))
             task_kinds.append("product")
 
         results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
@@ -148,7 +170,7 @@ async def search_unified(body: SearchRequest):
         return _paginate(combined, body.PageNo, body.PageSize)
 
     except Exception as err:
-        logger.error(f"Unified search error: {err}")
+        logger.error("Unified search error (exception_type=%s)", type(err).__name__)
         return JSONResponse(
             status_code=500,
             content={

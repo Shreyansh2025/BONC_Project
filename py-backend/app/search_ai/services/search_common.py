@@ -349,8 +349,8 @@ def shares_any_word(term: str, target: Any) -> bool:
     (e.g. "cargo" and a "Car Rental Services" business -- both
     transport-related, zero words in common) don't get surfaced on
     semantic similarity alone. A genuinely close semantic match at HIGH
-    confidence still gets through with no shared word required -- see
-    AI_HIGH_CONFIDENCE_PERCENTAGE in b2b_search.py / b2b_product_search.py."""
+    confidence still gets through with no shared word required -- the
+    cutoff is supplied by SearchRulesSettings for the current request."""
     if not term or not target:
         return False
     term_words = set(_TOKEN_RE.findall(str(term).lower()))

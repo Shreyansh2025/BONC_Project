@@ -45,6 +45,7 @@ def _test_client(app, client_host: str = "127.0.0.1") -> TestClient:
 
 from app import search_main
 from app.routes import search as search_route_module
+from app.search_ai.settings import SearchRulesSettings
 
 
 class SearchAppTestCase(unittest.TestCase):
@@ -116,7 +117,12 @@ class SearchAppTestCase(unittest.TestCase):
                  {"businessName": "Acme", "imagePath": "/company.png", "matchPercentage": 90}
              ]), \
              patch.object(search_route_module.b2b_product_search, "search_products_sync", return_value=[]), \
-             patch.object(search_route_module, "search_local_products_sync", return_value=[]):
+             patch.object(search_route_module, "search_local_products_sync", return_value=[]), \
+             patch.object(
+                 search_route_module.settings_store,
+                 "get_current_settings",
+                 return_value={"settings": SearchRulesSettings()},
+             ):
             with _test_client(search_main.create_app()) as client:
                 response = client.post(
                     "/api/search",

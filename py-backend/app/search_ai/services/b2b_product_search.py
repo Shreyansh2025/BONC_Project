@@ -63,6 +63,7 @@ from sqlalchemy import text
 
 from app.shared.db import get_engine
 from app.shared.logger import logger
+from app.search_ai.settings import SearchRulesSettings
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
 from app.search_ai.services.search_common import (
     build_inverted_index,
@@ -80,22 +81,8 @@ from app.search_ai.services.search_common import (
 
 STOP_WORDS = {"in", "at", "near", "and", "for", "the", "of", "to"}
 
-# See the identical constant in b2b_search.py: below this many lexical
-# (exact + partial) hits, the AI/FAISS layer also runs and its results are
-# merged in rather than skipped or blocked by an early return.
-MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI = 20
+# Runtime search thresholds are supplied by the persisted SearchRulesSettings.
 
-# AI/FAISS layer confidence bands (B2B product search) -- same reasoning
-# as the identical constants in b2b_search.py. Below AI_MIN_PERCENTAGE a
-# result is dropped outright. Between AI_MIN_PERCENTAGE and
-# AI_HIGH_CONFIDENCE_PERCENTAGE, a result also needs at least one literal
-# shared word with the query (see shares_any_word) to be kept, since
-# that band is where "same broad domain, different thing" false matches
-# live. At/above AI_HIGH_CONFIDENCE_PERCENTAGE it's trusted on semantics
-# alone. Starting numbers, not tuned against labeled data yet -- adjust
-# these first once real good/bad examples are available.
-AI_MIN_PERCENTAGE = 40.0
-AI_HIGH_CONFIDENCE_PERCENTAGE = 65.0
 
 
 @dataclass(frozen=True)
@@ -323,9 +310,12 @@ async def build_index() -> None:
     logger.info(f"B2B product search index built with {len(docs)} products")
 
 
-def search_products_sync(query: str) -> list[dict[str, Any]]:
+def search_products_sync(
+    query: str, settings: SearchRulesSettings | None = None
+) -> list[dict[str, Any]]:
     """Exact -> partial -> AI-fallback hybrid search over the in-memory
     product cache. CPU-bound — call via asyncio.to_thread from the route."""
+    settings = settings or SearchRulesSettings()
     state = _state  # one consistent snapshot for the whole call
     search_term = clean_term(query)
     if not search_term or not state.products:
@@ -454,15 +444,15 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
 
     # Layer 2: AI fallback via FAISS similarity over the embedded product
     # text. Now runs whenever lexical coverage is thin (below
-    # MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI), merged into the same ranked
+    # settings.lexical_result_threshold), merged into the same ranked
     # list instead of being blocked outright by any single exact/partial
     # hit — see the matching note in b2b_search.py.
     ai_results: list[dict[str, Any]] = []
-    if len(lexical_results) < MAX_LEXICAL_RESULTS_BEFORE_SKIPPING_AI and state.index is not None:
+    if len(lexical_results) < settings.lexical_result_threshold and state.index is not None:
         model = get_model()
         query_vector = model.encode([search_term])
         faiss.normalize_L2(query_vector)
-        distances, indices = state.index.search(query_vector.astype("float32"), k=50)
+        distances, indices = state.index.search(query_vector.astype("float32"), k=settings.semantic_candidate_limit)
 
         for i, idx in enumerate(indices[0]):
             if idx == -1 or idx >= len(state.products):
@@ -470,7 +460,7 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             distance_score = distances[0][i]
             cosine_sim = 1 - (distance_score / 2)
             percentage = max(0.0, round(cosine_sim * 100, 2))
-            if percentage < AI_MIN_PERCENTAGE:
+            if percentage < settings.b2b_product.semantic_min_score:
                 continue
 
             doc = state.products[int(idx)]
@@ -481,7 +471,7 @@ def search_products_sync(query: str) -> list[dict[str, Any]]:
             # Middle-confidence band safety net: without at least one
             # shared word, a same-domain-but-different-thing match gets
             # dropped here instead of surfacing on semantic proximity alone.
-            if percentage < AI_HIGH_CONFIDENCE_PERCENTAGE and not shares_any_word(
+            if percentage < settings.b2b_product.semantic_high_confidence_score and not shares_any_word(
                 search_term, _combined_text(doc)
             ):
                 continue
