@@ -31,11 +31,10 @@ Problems fixed in this module:
    doc in the catalog on every request. This is what turns the exact and
    partial layers from an O(catalog size) scan into an O(matches) scan.
 
-Both spelling problems are fixed without adding any new dependency:
-`correct_query` spell-corrects against a vocabulary built from the
-catalog's own text (so it fixes typos toward real product/brand/category
-words, not generic English), and `contains_loose` compares both the
-normal and the whitespace-stripped form of each side, boundary-safe.
+The spelling correction system combines a general English dictionary
+with the catalogue's own vocabulary. Recognised English words and
+known catalogue terms are preserved, while likely misspellings can
+still be corrected toward real product, brand and category words.
 
 A third, related problem fixed here: a correctly-spelled compact
 compound word (e.g. "airconditioner" typed as one word) is never itself
@@ -61,6 +60,7 @@ import difflib
 import re
 from collections import Counter
 from typing import Any, Callable
+from spellchecker import SpellChecker
 
 # Words shorter than this are left alone during correction — for very
 # short words, almost every catalog word is within "close enough" edit
@@ -83,6 +83,9 @@ MIN_COMPOUND_PART_LEN = 3
 MAX_CORRECTION_CACHE = 5000
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# General English dictionary used to protect valid query words.
+_ENGLISH_SPELLCHECKER = SpellChecker(language="en")
 
 # Legal/structural suffixes — describe company FORM, not what it sells.
 # Never required for a match, never block one. If they DO appear in a
@@ -287,6 +290,13 @@ def correct_word(word: str, vocabulary: Counter) -> str:
         return cache[word]
 
     if _is_compound_of_vocab(word, vocabulary):
+        if len(cache) < MAX_CORRECTION_CACHE:
+            cache[word] = word
+        return word
+
+    # Preserve valid English words even when they are absent
+    # from the product catalogue vocabulary.
+    if word in _ENGLISH_SPELLCHECKER:
         if len(cache) < MAX_CORRECTION_CACHE:
             cache[word] = word
         return word

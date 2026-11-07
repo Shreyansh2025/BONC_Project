@@ -16,3 +16,4 @@ onnxruntime==1.24.4
 faiss-cpu==1.9.0.post1
 sentence-transformers==3.3.1
 openpyxl==3.1.5
+pyspellchecker==0.9.1
