@@ -79,6 +79,69 @@ class SearchSettingsApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 422)
 
+    def test_settings_put_saves_new_version_and_returns_it(self):
+        settings = SearchRulesSettings()
+        payload = {
+            "expected_version": 1,
+            "settings": settings.model_dump(),
+            "change_reason": "API route test",
+        }
+        expected = {
+            "version": 2,
+            "settings": settings,
+            "updated_at_utc": "2026-11-09T10:00:00",
+            "updated_by": "qa-admin",
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SEARCH_ADMIN_API_TOKEN": "test-admin-token",
+                    "SEARCH_ADMIN_ACTOR": "qa-admin",
+                },
+                clear=True,
+            ),
+            patch.object(settings_store, "update_settings", return_value=expected) as update_mock,
+        ):
+            response = self.client.put(
+                "/api/admin/search-settings", headers=self.auth, json=payload
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["version"], 2)
+        self.assertEqual(response.json()["updated_by"], "qa-admin")
+        self.assertEqual(response.json()["settings"]["semantic_candidate_limit"], 50)
+        update_mock.assert_called_once()
+        self.assertEqual(update_mock.call_args.kwargs["expected_version"], 1)
+        self.assertEqual(update_mock.call_args.kwargs["changed_by"], "qa-admin")
+        self.assertEqual(update_mock.call_args.kwargs["change_reason"], "API route test")
+
+    def test_settings_history_returns_items_and_honors_limit(self):
+        settings = SearchRulesSettings()
+        expected_items = [
+            {
+                "history_id": 8,
+                "version": 3,
+                "settings": settings,
+                "changed_at_utc": "2026-11-09T09:00:00",
+                "changed_by": "qa-admin",
+                "change_reason": "API history test",
+            }
+        ]
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "test-admin-token"}, clear=True),
+            patch.object(settings_store, "get_settings_history", return_value=expected_items) as history_mock,
+        ):
+            response = self.client.get(
+                "/api/admin/search-settings/history?limit=25", headers=self.auth
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["items"]), 1)
+        self.assertEqual(response.json()["items"][0]["version"], 3)
+        self.assertEqual(response.json()["items"][0]["settings"]["semantic_candidate_limit"], 50)
+        history_mock.assert_called_once_with(limit=25)
+
 
 if __name__ == "__main__":
     unittest.main()
