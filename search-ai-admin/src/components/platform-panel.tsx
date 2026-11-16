@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import {
   createPlatformCategory,
   getPlatformCategories,
@@ -113,7 +114,7 @@ export default function PlatformPanel() {
     setFields((current) => current.filter((_, i) => i !== index));
   };
 
-  const createCategory = async (event: React.FormEvent<HTMLFormElement>) => {
+  const createCategory = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSaving(true);
     setError("");
