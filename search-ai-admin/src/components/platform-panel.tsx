@@ -4,6 +4,8 @@ import {
   createPlatformCategory,
   getPlatformCategories,
   getPlatformCategoryHistory,
+  getPlatformFeedback,
+  recordPlatformFeedback,
   ingestPlatformDocuments,
   runPlatformAdminSearch,
   syncPlatformCategory,
@@ -11,6 +13,7 @@ import {
   type PlatformCategoryConfig,
   type PlatformCategoryRecord,
   type PlatformCategoryHistoryItem,
+  type PlatformFeedbackSummary,
   type PlatformFieldConfig,
   type PlatformFieldRole,
   type PlatformSourceFilter,
@@ -78,6 +81,8 @@ export default function PlatformPanel() {
   const [query, setQuery] = useState("Shreyansh OCR expert in Indore");
   const [searchResult, setSearchResult] = useState<PlatformSearchResponse | null>(null);
   const [categoryHistory, setCategoryHistory] = useState<PlatformCategoryHistoryItem[]>([]);
+  const [feedbackSummary, setFeedbackSummary] = useState<PlatformFeedbackSummary | null>(null);
+  const [feedbackSaving, setFeedbackSaving] = useState("");
   const [changeReason, setChangeReason] = useState("");
 
   const refresh = useCallback(async () => {
@@ -108,6 +113,36 @@ export default function PlatformPanel() {
       setCategoryHistory(await getPlatformCategoryHistory(id));
     } catch {
       setCategoryHistory([]);
+    }
+  };
+
+  const loadFeedback = async (id: string) => {
+    try {
+      setFeedbackSummary(await getPlatformFeedback(id));
+    } catch {
+      setFeedbackSummary(null);
+    }
+  };
+
+  const labelResult = async (documentId: string, isRelevant: boolean) => {
+    if (!selectedCategory || !searchResult) return;
+    const action = documentId + (isRelevant ? ":relevant" : ":not-relevant");
+    setFeedbackSaving(action);
+    setError("");
+    setNotice("");
+    try {
+      await recordPlatformFeedback({
+        categoryId: selectedCategory,
+        query: searchResult.query,
+        documentId,
+        isRelevant,
+      });
+      setNotice(isRelevant ? "Marked result as relevant." : "Marked result as not relevant.");
+      await loadFeedback(selectedCategory);
+    } catch (e) {
+      setError(getError(e, "Unable to save result feedback."));
+    } finally {
+      setFeedbackSaving("");
     }
   };
 
@@ -171,6 +206,7 @@ export default function PlatformPanel() {
     setEditingVersion(item.config_version);
     setSelectedCategory(config.category_id);
     void loadHistory(config.category_id);
+    void loadFeedback(config.category_id);
     setSearchResult(null);
     setNotice("Editing " + config.display_name + ". Save changes to create a new configuration version.");
     setError("");
@@ -225,6 +261,7 @@ export default function PlatformPanel() {
       setChangeReason("");
       setSelectedCategory(saved.config.category_id);
       await loadHistory(saved.config.category_id);
+      await loadFeedback(saved.config.category_id);
       await refresh();
     } catch (e) {
       setError(getError(e, "Unable to create category."));
@@ -398,7 +435,7 @@ export default function PlatformPanel() {
       <section className="panel platform-test-panel">
         <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test category data</h2></div><span className="method-badge">Admin only</span></div>
         <div className="platform-form-grid">
-          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) void loadHistory(e.target.value); else setCategoryHistory([]); }}><option value="">Select a category</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
+          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select a category</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
           <div className="setting-field"><span>Selected source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
         </div>
         {selectedRecord?.config.source.type === "push" && <form onSubmit={(event) => void ingest(event)}>
