@@ -63,15 +63,16 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
 
     engine = _engine_from_environment_name(f"SEARCH_SOURCE_{profile_id}")
     query = text("""
-        SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE,
-               COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
+        SELECT tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, tables_view.TABLE_TYPE,
+               columns_view.COLUMN_NAME, columns_view.DATA_TYPE,
+               columns_view.IS_NULLABLE, columns_view.ORDINAL_POSITION
         FROM INFORMATION_SCHEMA.TABLES AS tables_view
         INNER JOIN INFORMATION_SCHEMA.COLUMNS AS columns_view
             ON tables_view.TABLE_SCHEMA = columns_view.TABLE_SCHEMA
            AND tables_view.TABLE_NAME = columns_view.TABLE_NAME
-        WHERE (:schema_name IS NULL OR TABLE_SCHEMA = :schema_name)
-          AND TABLE_TYPE IN (N'BASE TABLE', N'VIEW')
-        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+        WHERE (:schema_name IS NULL OR tables_view.TABLE_SCHEMA = :schema_name)
+          AND tables_view.TABLE_TYPE IN (N'BASE TABLE', N'VIEW')
+        ORDER BY tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, columns_view.ORDINAL_POSITION
     """)
     try:
         with engine.connect() as connection:
