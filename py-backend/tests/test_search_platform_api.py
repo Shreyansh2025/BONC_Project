@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.search_ai.routes.platform import admin_router, router
-from app.search_ai.services import category_store, platform_search
+from app.search_ai.services import category_store, platform_search, source_sync
 
 
 class GenericSearchPlatformApiTests(unittest.TestCase):
@@ -97,6 +97,69 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
         create_mock.assert_called_once()
         self.assertEqual(create_mock.call_args.kwargs["updated_by"], "qa")
 
+
+
+    def test_admin_source_profile_list_requires_token(self):
+        with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
+            response = self.client.get("/api/admin/platform/sources")
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_source_profile_list_exposes_names_but_not_credentials(self):
+        secret = "Server=internal-db;Database=BONC;Password=do-not-return;"
+        with patch.dict(os.environ, {
+            "SEARCH_ADMIN_API_TOKEN": "platform-admin-token",
+            "SEARCH_SOURCE_PEOPLE": secret,
+            "SEARCH_SOURCE_CONTENT": "Server=other-db;Database=content;Password=another-secret;",
+        }, clear=True):
+            response = self.client.get("/api/admin/platform/sources", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [item["profile_id"] for item in response.json()["items"]],
+            ["CONTENT", "PEOPLE"],
+        )
+        self.assertNotIn("Password", response.text)
+        self.assertNotIn("internal-db", response.text)
+        self.assertNotIn("another-secret", response.text)
+
+    def test_admin_source_schema_requires_token(self):
+        with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
+            response = self.client.get("/api/admin/platform/sources/PEOPLE/schema")
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_source_schema_returns_discovered_metadata(self):
+        expected = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Staging",
+            "schemas": ["dbo"],
+            "tables": [{
+                "schema": "dbo",
+                "name": "Users",
+                "type": "BASE TABLE",
+                "columns": [{"name": "UserId", "data_type": "int", "nullable": False}],
+            }],
+        }
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(source_sync, "discover_source_schema", return_value=expected) as discover_mock,
+        ):
+            response = self.client.get(
+                "/api/admin/platform/sources/PEOPLE/schema",
+                headers=self.auth,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), expected)
+        discover_mock.assert_called_once_with("PEOPLE", schema=None)
+
+    def test_admin_source_schema_validation_error_is_safe(self):
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(source_sync, "discover_source_schema", side_effect=ValueError("Invalid source profile ID")),
+        ):
+            response = self.client.get(
+                "/api/admin/platform/sources/not-valid/schema",
+                headers=self.auth,
+            )
+        self.assertEqual(response.status_code, 422, response.text)
 
 if __name__ == "__main__":
     unittest.main()
