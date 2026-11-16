@@ -256,8 +256,10 @@ def _is_sensitive_column_name(value: str) -> bool:
     return normalized_name in _SENSITIVE_COLUMN_NAMES or any(
         normalized_name.endswith(sensitive) for sensitive in (
             "password", "token", "secret", "hash", "salt", "aadhaar",
-            "aadhar", "passport", "phonenumber", "mobilenumber",
+            "aadhar", "passport", "passportnumber", "phonenumber", "mobilenumber",
             "email", "emailid", "mobile", "mobileno", "phone",
+            "pannumber", "panid", "socialsecuritynumber", "voterid",
+            "aadharnumber", "aadhaarnumber", "birthdate",
         )
     )
 
@@ -351,8 +353,21 @@ def build_source_mapping_suggestions(
         if _is_sensitive_column_name(name):
             skipped.append({"column": name, "reason": "Sensitive or contact field excluded from automatic mapping"})
             continue
-        if normalized_name in {"id", "userid", "userrowid", "useruniqueid", "articleid", "productid", "companyid", "documentid"}:
-            skipped.append({"column": name, "reason": "Record identifier; used for document identity, not searchable content"})
+        if (
+            column.get("is_primary_key")
+            or column.get("is_foreign_key")
+            or normalized_name in {
+                "id", "userid", "userrowid", "useruniqueid", "articleid",
+                "productid", "companyid", "documentid",
+            }
+            or (
+                normalized_name.endswith("id")
+                and str(column.get("data_type", "")).lower() in {
+                    "uniqueidentifier", "int", "bigint", "smallint", "tinyint"
+                }
+            )
+        ):
+            skipped.append({"column": name, "reason": "Record or relationship identifier; not mapped as searchable content"})
             continue
         matching_roles = [
             role for role, aliases in _ROLE_ALIASES.items()
