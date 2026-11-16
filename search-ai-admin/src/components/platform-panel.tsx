@@ -55,6 +55,13 @@ function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function parseSynonymGroups(value: string): Array<{ terms: string[] }> {
+  return value.split(/\r?\n/)
+    .map((line) => line.split(",").map((term) => term.trim().toLowerCase()).filter(Boolean))
+    .filter((terms) => terms.length >= 2)
+    .map((terms) => ({ terms }));
+}
+
 export default function PlatformPanel() {
   const [categories, setCategories] = useState<PlatformCategoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,6 +94,7 @@ export default function PlatformPanel() {
   const [sourceFilters, setSourceFilters] = useState<PlatformSourceFilter[]>([]);
   const [publicEnabled, setPublicEnabled] = useState(false);
   const [fields, setFields] = useState<PlatformFieldConfig[]>(INITIAL_FIELDS);
+  const [synonymText, setSynonymText] = useState("");
   const [minScore, setMinScore] = useState(20);
   const [lexicalWeight, setLexicalWeight] = useState(0.65);
   const [semanticWeight, setSemanticWeight] = useState(0.35);
@@ -241,6 +249,7 @@ export default function PlatformPanel() {
       setSourceFilters([]);
     }
     setFields(config.fields.map((field) => ({ ...field, aliases: [...field.aliases] })));
+    setSynonymText((config.synonyms || []).map((group) => group.terms.join(", ")).join("\n"));
     setMinScore(config.rules.semantic_min_score);
     setLexicalWeight(config.rules.lexical_weight);
     setSemanticWeight(config.rules.semantic_weight);
@@ -401,6 +410,7 @@ export default function PlatformPanel() {
               filters: sourceFilters,
             },
         fields,
+        synonyms: parseSynonymGroups(synonymText),
         rules: {
           ...DEFAULT_RULES,
           lexical_enabled: lexicalEnabled,
@@ -694,6 +704,19 @@ export default function PlatformPanel() {
             </div>)}
           </div>
 
+          <div className="settings-section-title"><div><h3>Search synonyms</h3><p>Each line is one synonym group. Separate equivalent words or phrases with commas. Groups apply only to this engine.</p></div></div>
+          <label className="setting-field wide">
+            <span>Synonym groups</span>
+            <textarea
+              className="platform-json-input"
+              rows={4}
+              value={synonymText}
+              onChange={(e) => setSynonymText(e.target.value)}
+              placeholder={"developer, engineer, programmer\nmachine learning, ml, artificial intelligence\nproduct, item, goods"}
+            />
+            <small>Example: a query for “developer” can also retrieve “engineer”. Exact indexed names and values are protected from synonym expansion.</small>
+          </label>
+
           <div className="settings-section-title"><div><h3>Search rules</h3><p>These are runtime ranking configurations, not model fine-tuning.</p></div></div>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Minimum semantic score</span><input type="number" min="0" max="100" step="0.5" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} /></label>
@@ -720,6 +743,7 @@ export default function PlatformPanel() {
               setMaxRecords(50000);
               setSourceFilters([]);
               setFields(INITIAL_FIELDS);
+              setSynonymText("");
               setMinScore(20);
               setLexicalWeight(0.65);
               setSemanticWeight(0.35);
