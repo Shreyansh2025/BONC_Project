@@ -49,6 +49,7 @@ _UPDATE_CATEGORY = text("""
         ConfigJson = :config_json,
         Status = :status,
         ConfigVersion = ConfigVersion + 1,
+        IndexVersion = IndexVersion + 1,
         UpdatedAtUtc = SYSUTCDATETIME(),
         UpdatedBy = :updated_by
     WHERE CategoryId = :category_id AND ConfigVersion = :expected_version
@@ -61,6 +62,28 @@ _INSERT_DOCUMENT = text("""
         (CategoryId, DocumentId, Title, FieldsJson, MetadataJson)
     VALUES
         (:category_id, :document_id, :title, :fields_json, :metadata_json)
+""")
+
+_UPSERT_DOCUMENT = text("""
+    MERGE searchai.SearchDocuments AS target
+    USING (
+        SELECT :category_id AS CategoryId,
+               :document_id AS DocumentId,
+               :title AS Title,
+               :fields_json AS FieldsJson,
+               :metadata_json AS MetadataJson
+    ) AS source
+    ON target.CategoryId = source.CategoryId
+       AND target.DocumentId = source.DocumentId
+    WHEN MATCHED THEN
+        UPDATE SET Title = source.Title,
+                   FieldsJson = source.FieldsJson,
+                   MetadataJson = source.MetadataJson,
+                   UpdatedAtUtc = SYSUTCDATETIME()
+    WHEN NOT MATCHED THEN
+        INSERT (CategoryId, DocumentId, Title, FieldsJson, MetadataJson)
+        VALUES (source.CategoryId, source.DocumentId, source.Title,
+                source.FieldsJson, source.MetadataJson);
 """)
 
 _LIST_DOCUMENTS = text("""
@@ -167,8 +190,9 @@ def replace_documents(
     documents: list[SearchDocument],
     *,
     updated_by: str,
+    replace_all: bool = False,
 ) -> int:
-    """Replace a category's corpus atomically and bump its index version."""
+    """Upsert documents (or replace the full snapshot) and bump index version."""
     if not documents:
         raise ValueError("At least one document is required")
     ids = [doc.document_id for doc in documents]
@@ -183,9 +207,10 @@ def replace_documents(
         if exists is None:
             raise CategoryNotFoundError(category_id)
 
-        connection.execute(_DELETE_DOCUMENTS, {"category_id": category_id})
+        if replace_all:
+            connection.execute(_DELETE_DOCUMENTS, {"category_id": category_id})
         connection.execute(
-            _INSERT_DOCUMENT,
+            _INSERT_DOCUMENT if replace_all else _UPSERT_DOCUMENT,
             [{
                 "category_id": category_id,
                 "document_id": doc.document_id,
