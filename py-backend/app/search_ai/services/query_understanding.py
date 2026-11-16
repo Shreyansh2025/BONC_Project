@@ -89,7 +89,8 @@ def interpret_query(
         for value in candidates:
             value_text = str(value).strip()
             normalised_value = normalise_query(value_text)
-            if len(normalised_value.replace(" ", "")) >= 2 and contains_phrase(normalised, normalised_value):
+            min_value_length = 1 if field.role == "skill" else 2
+            if len(normalised_value.replace(" ", "")) >= min_value_length and contains_phrase(normalised, normalised_value):
                 values.add(value_text)
                 recognised_phrases.add(normalised_value)
 
