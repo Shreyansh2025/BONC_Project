@@ -580,7 +580,7 @@ export default function PlatformPanel() {
         </div>}
         {searchResult && <div className="platform-results">
           <div className="platform-result-summary"><strong>{searchResult.total_count} results</strong><span>Index v{searchResult.index_version}</span></div>
-          <div className="mini-panel"><div><strong>Query understanding (field hints)</strong><p>{pretty(searchResult.query_understanding)}</p></div></div>
+          <div className="mini-panel"><div><strong>Query understanding & search plan</strong><p>{searchResult.query_plan.explanation}</p><p>{pretty(searchResult.query_plan)}</p></div></div>
           {searchResult.data.map((item) => <article className="platform-result-item" key={item.id}>
             <div><strong>{item.title}</strong><small>{item.matched_fields.join(", ") || "Semantic match"}</small><pre>{pretty(item.fields)}</pre>
               <div className="platform-feedback-actions">
