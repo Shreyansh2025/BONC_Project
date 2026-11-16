@@ -221,9 +221,11 @@ export default function PlatformPanel() {
   };
 
   const addSourceFilter = () => {
+    // Never assume the source's soft-delete convention. Require the admin
+    // to select a column and explicitly choose its intended filter.
     setSourceFilters((current) => [
       ...current,
-      { column: "IsDeleted", operator: "eq", value: 0, values: [] },
+      { column: "", operator: "is_null", values: [] },
     ]);
   };
 
@@ -662,14 +664,15 @@ export default function PlatformPanel() {
             <div className="settings-section-title"><div><h3>Source filters</h3><p>Optional safe filters applied while reading the configured table. Do not use this to bypass record permissions.</p></div><button type="button" className="secondary-button" onClick={addSourceFilter}>Add filter</button></div>
             {sourceFilters.map((filter, index) => <div className="platform-filter-row" key={index}>
               <label className="setting-field"><span>Column</span>{sourceCatalog
-                ? <select value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })}>
+                ? <select value={filter.column} required onChange={(e) => updateSourceFilter(index, { column: e.target.value })}>
+                    <option value="">Select a source column</option>
                     {sourceColumns.map((column) => <option key={column.name} value={column.name}>
                       {column.name}
                       {column.is_primary_key ? " · PK" : ""}
                       {column.is_foreign_key ? " · FK" : ""}
                     </option>)}
                   </select>
-                : <input value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })} />}</label>
+                : <input value={filter.column} required onChange={(e) => updateSourceFilter(index, { column: e.target.value })} />}</label>
               <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSourceFilter(index, { operator: e.target.value as PlatformSourceFilter["operator"], value: undefined, values: [] })}>
                 <option value="eq">Equals</option><option value="ne">Not equal</option><option value="in">In list</option><option value="is_null">Is empty</option><option value="not_null">Is not empty</option>
               </select></label>
