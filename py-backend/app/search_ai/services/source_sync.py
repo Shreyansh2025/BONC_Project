@@ -54,12 +54,41 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
         for field in config.fields
     )
     qualified_table = f"{_quote_identifier(source.schema)}.{_quote_identifier(source.table)}"
-    query = text(f"SELECT {', '.join(selected)} FROM {qualified_table}")
+
+    # Values are always bound parameters. Only validated identifiers are
+    # interpolated into SQL, so dashboard users cannot submit raw SQL.
+    where_clauses: list[str] = []
+    parameters: dict[str, Any] = {"row_limit": source.max_records}
+    for filter_index, source_filter in enumerate(source.filters):
+        column = _quote_identifier(source_filter.column)
+        operator = source_filter.operator
+        if operator in {"eq", "ne"}:
+            parameter = f"filter_{filter_index}"
+            symbol = "=" if operator == "eq" else "<>"
+            where_clauses.append(f"{column} {symbol} :{parameter}")
+            parameters[parameter] = source_filter.value
+        elif operator == "in":
+            names = []
+            for value_index, value in enumerate(source_filter.values):
+                parameter = f"filter_{filter_index}_{value_index}"
+                names.append(f":{parameter}")
+                parameters[parameter] = value
+            where_clauses.append(f"{column} IN ({', '.join(names)})")
+        elif operator == "is_null":
+            where_clauses.append(f"{column} IS NULL")
+        elif operator == "not_null":
+            where_clauses.append(f"{column} IS NOT NULL")
+
+    where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    query = text(
+        f"SELECT TOP (:row_limit) {', '.join(selected)} "
+        f"FROM {qualified_table}{where_sql}"
+    )
 
     engine = _source_engine(source)
     try:
         with engine.connect() as connection:
-            rows = connection.execute(query).mappings().all()
+            rows = connection.execute(query, parameters).mappings().all()
     finally:
         engine.dispose()
 
