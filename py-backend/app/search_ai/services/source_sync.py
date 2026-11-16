@@ -55,7 +55,7 @@ def list_source_profiles() -> list[dict[str, str]]:
 
 
 def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[str, Any]:
-    """Test a configured SQL Server profile and list accessible tables/views and columns."""
+    """Discover tables, columns, primary keys and declared foreign-key relationships."""
     if not re.fullmatch(r"[A-Z0-9_]{1,80}", profile_id):
         raise ValueError("Invalid source profile ID")
     if schema is not None and not _IDENTIFIER.fullmatch(schema):
@@ -63,6 +63,11 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
 
     engine = _engine_from_environment_name(f"SEARCH_SOURCE_{profile_id}")
     schema_clause = "AND tables_view.TABLE_SCHEMA = :schema_name" if schema else ""
+    key_schema_clause = "AND tc.TABLE_SCHEMA = :schema_name" if schema else ""
+    relationship_schema_clause = (
+        "WHERE fk.TABLE_SCHEMA = :schema_name OR referenced.TABLE_SCHEMA = :schema_name"
+        if schema else ""
+    )
     query = text(f"""
         SELECT tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, tables_view.TABLE_TYPE,
                columns_view.COLUMN_NAME, columns_view.DATA_TYPE,
@@ -75,27 +80,110 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
           {schema_clause}
         ORDER BY tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, columns_view.ORDINAL_POSITION
     """)
+    primary_key_query = text(f"""
+        SELECT tc.TABLE_SCHEMA, tc.TABLE_NAME, kcu.COLUMN_NAME, kcu.ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
+        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu
+            ON tc.CONSTRAINT_CATALOG = kcu.CONSTRAINT_CATALOG
+           AND tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+           AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+           AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+           AND tc.TABLE_NAME = kcu.TABLE_NAME
+        WHERE tc.CONSTRAINT_TYPE = N'PRIMARY KEY'
+          {key_schema_clause}
+        ORDER BY tc.TABLE_SCHEMA, tc.TABLE_NAME, kcu.ORDINAL_POSITION
+    """)
+    foreign_key_query = text(f"""
+        SELECT
+            fk.CONSTRAINT_NAME,
+            fk.TABLE_SCHEMA AS FROM_SCHEMA,
+            fk.TABLE_NAME AS FROM_TABLE,
+            fk.COLUMN_NAME AS FROM_COLUMN,
+            referenced.TABLE_SCHEMA AS TO_SCHEMA,
+            referenced.TABLE_NAME AS TO_TABLE,
+            referenced.COLUMN_NAME AS TO_COLUMN,
+            fk.ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS rc
+        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS fk
+            ON rc.CONSTRAINT_CATALOG = fk.CONSTRAINT_CATALOG
+           AND rc.CONSTRAINT_SCHEMA = fk.CONSTRAINT_SCHEMA
+           AND rc.CONSTRAINT_NAME = fk.CONSTRAINT_NAME
+        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS referenced
+            ON rc.UNIQUE_CONSTRAINT_CATALOG = referenced.CONSTRAINT_CATALOG
+           AND rc.UNIQUE_CONSTRAINT_SCHEMA = referenced.CONSTRAINT_SCHEMA
+           AND rc.UNIQUE_CONSTRAINT_NAME = referenced.CONSTRAINT_NAME
+           AND fk.ORDINAL_POSITION = referenced.ORDINAL_POSITION
+        {relationship_schema_clause}
+        ORDER BY fk.TABLE_SCHEMA, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fk.ORDINAL_POSITION
+    """)
+    parameters = {"schema_name": schema} if schema else {}
     try:
         with engine.connect() as connection:
             database_name = connection.execute(text("SELECT DB_NAME()")).scalar_one()
-            parameters = {"schema_name": schema} if schema else {}
             rows = connection.execute(query, parameters).mappings().all()
+            primary_key_rows = connection.execute(
+                primary_key_query, parameters
+            ).mappings().all()
+            foreign_key_rows = connection.execute(
+                foreign_key_query, parameters
+            ).mappings().all()
     finally:
         engine.dispose()
+
+    primary_keys: dict[tuple[str, str], list[str]] = {}
+    for row in primary_key_rows:
+        key = (str(row["TABLE_SCHEMA"]), str(row["TABLE_NAME"]))
+        primary_keys.setdefault(key, []).append(str(row["COLUMN_NAME"]))
+
+    foreign_key_columns: set[tuple[str, str, str]] = set()
+    relationships_by_constraint: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in foreign_key_rows:
+        from_schema = str(row["FROM_SCHEMA"])
+        from_table = str(row["FROM_TABLE"])
+        from_column = str(row["FROM_COLUMN"])
+        to_schema = str(row["TO_SCHEMA"])
+        to_table = str(row["TO_TABLE"])
+        constraint_name = str(row["CONSTRAINT_NAME"])
+        foreign_key_columns.add((from_schema, from_table, from_column))
+        relationship_key = (
+            from_schema, from_table, constraint_name, to_schema, to_table
+        )
+        relationship = relationships_by_constraint.setdefault(relationship_key, {
+            "constraint_name": constraint_name,
+            "from_schema": from_schema,
+            "from_table": from_table,
+            "to_schema": to_schema,
+            "to_table": to_table,
+            "columns": [],
+        })
+        relationship["columns"].append({
+            "from_column": from_column,
+            "to_column": str(row["TO_COLUMN"]),
+            "ordinal_position": int(row["ORDINAL_POSITION"]),
+        })
+
+    relationships = list(relationships_by_constraint.values())
+    for relationship in relationships:
+        relationship["columns"].sort(key=lambda item: item["ordinal_position"])
 
     tables: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         key = (str(row["TABLE_SCHEMA"]), str(row["TABLE_NAME"]))
+        primary_key_columns = primary_keys.get(key, [])
+        column_name = str(row["COLUMN_NAME"])
         table = tables.setdefault(key, {
             "schema": key[0],
             "name": key[1],
             "type": str(row["TABLE_TYPE"]),
+            "primary_key_columns": primary_key_columns,
             "columns": [],
         })
         table["columns"].append({
-            "name": str(row["COLUMN_NAME"]),
+            "name": column_name,
             "data_type": str(row["DATA_TYPE"]),
             "nullable": str(row["IS_NULLABLE"]).upper() == "YES",
+            "is_primary_key": column_name in primary_key_columns,
+            "is_foreign_key": (key[0], key[1], column_name) in foreign_key_columns,
         })
 
     table_items = list(tables.values())
@@ -104,8 +192,8 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
         "database": str(database_name or ""),
         "schemas": sorted({item["schema"] for item in table_items}),
         "tables": table_items,
+        "relationships": relationships,
     }
-
 
 def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     if not isinstance(config.source, SQLServerSourceConfig):
