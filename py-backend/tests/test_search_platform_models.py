@@ -525,7 +525,8 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertTrue(any("NULL" in warning for warning in result["warnings"]))
         self.assertTrue(any("duplicate" in warning for warning in result["warnings"]))
         query = connection.execute.call_args.args[0]
-        self.assertIn("COUNT_BIG(DISTINCT [PersonId])", query.text)
+        self.assertIn("COUNT_BIG(DISTINCT CASE WHEN", query.text)
+        self.assertIn("AS blank_ids", query.text)
         self.assertIn("[IsDeleted] IS NULL", query.text)
 
     def test_source_mapping_suggestions_choose_primary_key_and_skip_sensitive_columns(self):
