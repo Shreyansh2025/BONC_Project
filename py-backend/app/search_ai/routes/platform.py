@@ -19,6 +19,7 @@ class CategoryUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
     config: CategoryConfig
+    change_reason: str | None = Field(default=None, max_length=1000)
 
 
 def _require_admin(authorization: str | None) -> str:
@@ -129,6 +130,7 @@ def admin_update_category(
             body.config,
             expected_version=body.expected_version,
             updated_by=actor,
+            change_reason=body.change_reason,
         )
         platform_search.invalidate_category_index(category_id)
         return result
@@ -136,6 +138,18 @@ def admin_update_category(
         raise _not_found(exc) from exc
     except category_store.CategoryStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@admin_router.get("/categories/{category_id}/history")
+def admin_category_history(
+    category_id: str,
+    authorization: str | None = Header(default=None),
+):
+    _require_admin(authorization)
+    try:
+        return {"items": category_store.get_category_history(category_id)}
+    except category_store.CategoryNotFoundError as exc:
+        raise _not_found(exc) from exc
 
 
 @admin_router.post("/categories/{category_id}/ingest")
