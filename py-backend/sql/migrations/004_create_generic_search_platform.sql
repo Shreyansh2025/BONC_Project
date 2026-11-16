@@ -62,6 +62,25 @@ BEGIN TRY
         );
     END;
 
+    IF OBJECT_ID(N'searchai.SearchFeedback', N'U') IS NULL
+    BEGIN
+        CREATE TABLE searchai.SearchFeedback (
+            FeedbackId      BIGINT IDENTITY(1,1) NOT NULL,
+            CategoryId      NVARCHAR(64) NOT NULL,
+            QueryText       NVARCHAR(500) NOT NULL,
+            DocumentId      NVARCHAR(200) NOT NULL,
+            IsRelevant      BIT NOT NULL,
+            Comment         NVARCHAR(1000) NULL,
+            CreatedAtUtc    DATETIME2(3) NOT NULL CONSTRAINT DF_SearchFeedback_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+            CreatedBy       NVARCHAR(256) NOT NULL,
+            CONSTRAINT PK_SearchFeedback PRIMARY KEY (FeedbackId),
+            CONSTRAINT FK_SearchFeedback_Category FOREIGN KEY (CategoryId)
+                REFERENCES searchai.SearchCategories(CategoryId) ON DELETE CASCADE
+        );
+        CREATE INDEX IX_SearchFeedback_Category_Created
+            ON searchai.SearchFeedback(CategoryId, CreatedAtUtc DESC);
+    END;
+
     IF OBJECT_ID(N'searchai.SearchDocuments', N'U') IS NULL
     BEGIN
         CREATE TABLE searchai.SearchDocuments (
