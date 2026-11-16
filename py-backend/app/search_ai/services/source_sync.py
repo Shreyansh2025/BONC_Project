@@ -251,6 +251,14 @@ _SEARCHABLE_TYPES = {
     "decimal", "numeric", "float", "real", "money", "smallmoney",
 }
 
+_ID_COMPARABLE_TYPES = {
+    "char", "nchar", "varchar", "nvarchar",
+    "uniqueidentifier", "int", "bigint", "smallint", "tinyint", "bit",
+    "decimal", "numeric", "float", "real", "money", "smallmoney",
+    "date", "datetime", "datetime2", "smalldatetime", "datetimeoffset",
+    "time", "binary", "varbinary", "timestamp", "rowversion",
+}
+
 
 def _normalise_column_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
@@ -770,9 +778,10 @@ def validate_sqlserver_source(
         raise ValueError("The selected document ID column does not exist on this source")
     if _is_sensitive_column_name(id_column):
         raise ValueError("A sensitive or contact field cannot be used as the search document ID")
-    unsupported_distinct_types = {"text", "ntext", "image", "xml", "sql_variant"}
-    if column_types[id_column] in unsupported_distinct_types:
-        raise ValueError("The selected document ID data type cannot be checked for uniqueness; choose a comparable ID column")
+    if column_types[id_column] not in _ID_COMPARABLE_TYPES:
+        raise ValueError(
+            "The selected document ID data type cannot be checked safely for uniqueness; choose a supported scalar ID column"
+        )
 
     for source_filter in filters:
         if source_filter.column not in column_types:
