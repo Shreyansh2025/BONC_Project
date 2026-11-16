@@ -209,7 +209,8 @@ _SENSITIVE_COLUMN_NAMES = {
     "privatekey", "email", "emailid", "phonenumber", "mobilenumber",
     "mobile", "mobileno", "phone", "dateofbirth", "dob", "birthdate",
     "gender", "religion", "caste", "ethnicity", "maritalstatus",
-    "salary", "income", "disability", "homeaddress", "residentialaddress",
+    "salary", "income", "disability", "address", "address1", "address2",
+    "addressline1", "addressline2", "homeaddress", "residentialaddress",
     "mailingaddress", "streetaddress",
 }
 
@@ -275,6 +276,7 @@ def _is_sensitive_column_name(value: str) -> bool:
             "pannumber", "panid", "ssn", "socialsecuritynumber", "voterid",
             "aadharnumber", "aadhaarnumber", "birthdate", "homeaddress",
             "residentialaddress", "mailingaddress", "streetaddress",
+            "address1", "address2", "addressline1", "addressline2",
         )
     )
 
