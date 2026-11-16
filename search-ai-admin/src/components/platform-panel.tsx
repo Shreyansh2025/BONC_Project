@@ -301,7 +301,16 @@ export default function PlatformPanel() {
         schema,
         table,
       });
-      const safeFields = result.fields.map(({ confidence: _confidence, reason: _reason, ...field }) => field);
+      const safeFields: PlatformFieldConfig[] = result.fields.map((field) => ({
+        key: field.key,
+        source_column: field.source_column,
+        label: field.label,
+        role: field.role,
+        weight: field.weight,
+        searchable: field.searchable,
+        semantic: field.semantic,
+        aliases: field.aliases,
+      }));
       setFields(safeFields);
       if (result.id_column_suggestion.column) {
         setIdColumn(result.id_column_suggestion.column);
