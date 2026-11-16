@@ -19,6 +19,7 @@ from app.search_ai.services.platform_search import (
 )
 from app.search_ai.services.source_sync import (
     build_source_mapping_suggestions,
+    discover_source_schema,
     generate_join_view_preview,
     validate_sqlserver_source,
     sync_sqlserver_category,
@@ -619,6 +620,35 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(mapped_columns, {"FullName"})
         skipped_columns = {item["column"] for item in result["skipped_columns"]}
         self.assertTrue({"PersonGuid", "CompanyId", "PANNumber", "SSN", "Gender"}.issubset(skipped_columns))
+
+    def test_source_discovery_uses_referenced_key_ordinals_for_composite_foreign_keys(self):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        database_result = MagicMock()
+        database_result.scalar_one.return_value = "BONC_Dev"
+        empty_result = MagicMock()
+        empty_result.mappings.return_value.all.return_value = []
+        connection.execute.side_effect = [
+            database_result,
+            empty_result,
+            empty_result,
+            empty_result,
+        ]
+        engine = MagicMock()
+        engine.connect.return_value = connection
+
+        with patch(
+            "app.search_ai.services.source_sync._engine_from_environment_name",
+            return_value=engine,
+        ):
+            catalog = discover_source_schema("PEOPLE", schema="dbo")
+
+        foreign_key_query = connection.execute.call_args_list[3].args[0]
+        self.assertIn(
+            "fk.POSITION_IN_UNIQUE_CONSTRAINT = referenced.ORDINAL_POSITION",
+            foreign_key_query.text,
+        )
+        self.assertEqual(catalog["relationships"], [])
 
     def test_join_view_preview_generates_many_to_one_left_join_only(self):
         catalog = {
