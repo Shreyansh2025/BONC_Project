@@ -26,6 +26,7 @@ from app.search_ai.routes.search import router as search_router  # noqa: E402
 from app.search_ai.services import b2b_product_search, b2b_search, product_search  # noqa: E402
 from app.search_ai.services.embedding_model import warm_up_model  # noqa: E402
 from app.search_ai.routes.settings import router as settings_router
+from app.search_ai.routes.platform import router as platform_router, admin_router as platform_admin_router
 
 _raw_port = os.getenv("PORT", "8002")
 try:
@@ -195,6 +196,10 @@ def create_app() -> FastAPI:
     application.include_router(search_router, prefix="/api")
     application.include_router(internal_router)
     application.include_router(settings_router)
+    # Generic category-driven search runs alongside the legacy company/product
+    # pipelines. Existing route contracts and indexes remain untouched.
+    application.include_router(platform_router)
+    application.include_router(platform_admin_router)
 
     @application.get("/health/live")
     async def liveness():
