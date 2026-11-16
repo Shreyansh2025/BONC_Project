@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest
 from app.search_ai.services.platform_search import _lexical_score, _query_understanding, _contains_phrase
+from app.search_ai.services.query_understanding import interpret_query
 
 
 def people_config():
@@ -98,6 +99,78 @@ class SearchPlatformModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             PlatformSearchRequest.model_validate({"query": "Shreyansh OCR expert"})
 
+
+
+    def test_query_plan_removes_field_alias_but_keeps_exact_values(self):
+        config = CategoryConfig.model_validate(people_config())
+        interpreted = interpret_query(
+            "Find Python expertise in Indore",
+            config,
+            field_values={
+                "name": {"Shreyansh"},
+                "skills": {"Python", "OCR"},
+                "bio": {"Document processing developer"},
+                "location": {"Indore"},
+            },
+        )
+        self.assertEqual(interpreted["query_type"], "field_guided")
+        self.assertEqual(interpreted["matched_aliases"]["skills"], ["expertise"])
+        self.assertEqual(interpreted["matched_values"]["skills"], ["Python"])
+        self.assertEqual(interpreted["matched_values"]["location"], ["Indore"])
+        self.assertEqual(interpreted["lexical_query"], "find python in indore")
+        self.assertEqual(interpreted["unmatched_tokens"], ["find"])
+        self.assertEqual(
+            interpreted["constraints"],
+            [
+                {
+                    "field": "skills",
+                    "role": "skill",
+                    "values": ["Python"],
+                    "match": "exact_index_value",
+                    "applied_as": "ranking_hint_only",
+                },
+                {
+                    "field": "location",
+                    "role": "location",
+                    "values": ["Indore"],
+                    "match": "exact_index_value",
+                    "applied_as": "ranking_hint_only",
+                },
+            ],
+        )
+
+    def test_query_plan_uses_free_text_when_no_alias_or_indexed_value_matches(self):
+        config = CategoryConfig.model_validate(people_config())
+        interpreted = interpret_query(
+            "help me find a backend engineer",
+            config,
+            field_values={"name": set(), "skills": set(), "bio": set(), "location": set()},
+        )
+        self.assertEqual(interpreted["query_type"], "free_text")
+        self.assertEqual(interpreted["matched_aliases"], {})
+        self.assertEqual(interpreted["matched_values"], {})
+        self.assertEqual(interpreted["lexical_query"], "help me find a backend engineer")
+        self.assertFalse(interpreted["constraints"])
+
+    def test_query_plan_supports_one_letter_skill_terms(self):
+        config = CategoryConfig.model_validate(people_config())
+        interpreted = interpret_query(
+            "C developer",
+            config,
+            field_values={"skills": {"C"}, "name": set(), "bio": set(), "location": set()},
+        )
+        self.assertEqual(interpreted["matched_values"]["skills"], ["C"])
+        self.assertEqual(interpreted["lexical_query"], "c developer")
+
+    def test_query_understanding_does_not_treat_substrings_as_aliases(self):
+        config = CategoryConfig.model_validate(people_config())
+        interpreted = interpret_query(
+            "expertly written python article",
+            config,
+            field_values={"skills": {"Python"}},
+        )
+        self.assertNotIn("skills", interpreted["matched_aliases"])
+        self.assertEqual(interpreted["lexical_query"], "expertly written python article")
 
 if __name__ == "__main__":
     unittest.main()
