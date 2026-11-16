@@ -264,7 +264,7 @@ export default function PlatformPanel() {
     setSourceValidation(null);
     setSourceFilters((current) => [
       ...current,
-      { column: "", operator: "is_null", values: [] },
+      { column: "", operator: "eq", value: undefined, values: [] },
     ]);
   };
 
@@ -619,6 +619,7 @@ export default function PlatformPanel() {
                   setConnectionEnv(e.target.value ? "SEARCH_SOURCE_" + e.target.value : "");
                   setSourceCatalog(null);
                   setSourceValidation(null);
+                  setSourceFilters([]);
                   setMappingSuggestions(null);
                   setSelectedJoinRelationships([]);
                   setViewPreview(null);
@@ -635,7 +636,17 @@ export default function PlatformPanel() {
                 {sourceProfiles.length === 0 && <small>No SQL connection profiles are registered. A platform operator must configure a server-side SEARCH_SOURCE_ profile once; never paste credentials here.</small>}
               </div>
               <label className="setting-field"><span>Schema</span>{sourceCatalog
-                ? <select value={schema} onChange={(e) => { setSchema(e.target.value); setTable(""); setIdColumn(""); }}>
+                ? <select value={schema} onChange={(e) => {
+                    setSchema(e.target.value);
+                    setViewSchema(e.target.value);
+                    setTable("");
+                    setIdColumn("");
+                    setSourceFilters([]);
+                    setMappingSuggestions(null);
+                    setSelectedJoinRelationships([]);
+                    setViewPreview(null);
+                    setSourceValidation(null);
+                  }}>
                     {sourceCatalog.schemas.map((value) => <option key={value} value={value}>{value}</option>)}
                   </select>
                 : <input value={schema} onChange={(e) => setSchema(e.target.value)} required />}</label>
@@ -643,6 +654,7 @@ export default function PlatformPanel() {
                 ? <select value={table} onChange={(e) => {
                     const nextTable = sourceTables.find((item) => item.name === e.target.value);
                     setTable(e.target.value);
+                    setSourceFilters([]);
                     setMappingSuggestions(null);
                     setSelectedJoinRelationships([]);
                     setViewPreview(null);
@@ -782,7 +794,7 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSourceFilter(index, { operator: e.target.value as PlatformSourceFilter["operator"], value: undefined, values: [] })}>
                 <option value="eq">Equals</option><option value="ne">Not equal</option><option value="in">In list</option><option value="is_null">Is empty</option><option value="not_null">Is not empty</option>
               </select></label>
-              {filter.operator === "eq" || filter.operator === "ne" ? <label className="setting-field"><span>Value</span><input value={String(filter.value ?? "")} onChange={(e) => updateSourceFilter(index, { value: e.target.value })} /></label> : filter.operator === "in" ? <label className="setting-field"><span>Values (comma separated)</span><input value={(filter.values || []).join(", ")} onChange={(e) => updateSourceFilter(index, { values: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></label> : <div className="setting-field"><span>Value</span><small>No value required</small></div>}
+              {filter.operator === "eq" || filter.operator === "ne" ? <label className="setting-field"><span>Value</span><input required value={String(filter.value ?? "")} onChange={(e) => updateSourceFilter(index, { value: e.target.value })} /></label> : filter.operator === "in" ? <label className="setting-field"><span>Values (comma separated)</span><input value={(filter.values || []).join(", ")} onChange={(e) => updateSourceFilter(index, { values: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></label> : <div className="setting-field"><span>Value</span><small>No value required</small></div>}
               <button type="button" className="secondary-button danger-button" onClick={() => setSourceFilters((current) => current.filter((_, i) => i !== index))}>Remove</button>
             </div>)}
           </div>}
