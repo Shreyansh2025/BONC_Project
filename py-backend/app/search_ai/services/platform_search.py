@@ -278,7 +278,11 @@ def search_category(
     scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
-    if config.rules.semantic_enabled and index.vectors_index is not None:
+    if (
+        not exact_identifier_positions
+        and config.rules.semantic_enabled
+        and index.vectors_index is not None
+    ):
         query_vector = get_model().encode([query], convert_to_numpy=True)
         query_vector = np.asarray(query_vector, dtype="float32")
         faiss.normalize_L2(query_vector)
@@ -290,10 +294,14 @@ def search_category(
 
     lexical_positions = (
         candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
-        if config.rules.lexical_enabled
+        if config.rules.lexical_enabled and not exact_identifier_positions
         else set()
     )
-    candidate_positions = lexical_positions | set(semantic_scores) | set(exact_identifier_positions)
+    candidate_positions = (
+        set(exact_identifier_positions)
+        if exact_identifier_positions
+        else lexical_positions | set(semantic_scores)
+    )
 
     for position in sorted(candidate_positions):
         document = docs[position]
@@ -362,7 +370,14 @@ def search_category(
         }
         scored.append(result)
 
-    scored.sort(key=lambda item: (item["score"], item["semantic_score"]), reverse=True)
+    scored.sort(
+        key=lambda item: (
+            item["exact_identifier_match"],
+            item["score"],
+            item["semantic_score"],
+        ),
+        reverse=True,
+    )
     total = len(scored)
     offset = (page - 1) * page_size
     return {
