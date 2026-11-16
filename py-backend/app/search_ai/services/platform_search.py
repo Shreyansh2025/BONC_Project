@@ -1,7 +1,6 @@
 """Generic category-driven lexical + semantic search pipeline."""
 from __future__ import annotations
 
-import re
 import threading
 from collections import Counter
 from dataclasses import dataclass
@@ -26,7 +25,6 @@ from app.search_ai.services.search_common import (
 )
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOP_WORDS = {"a", "an", "and", "at", "for", "in", "near", "of", "on", "the", "to", "with"}
 _INDEX_LOCK = threading.RLock()
 
