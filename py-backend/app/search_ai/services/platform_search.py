@@ -76,14 +76,25 @@ def _build_weighted_semantic_vectors(
     if not pending_texts:
         return vectors
 
-    model_vectors = get_model().encode(pending_texts, convert_to_numpy=True)
-    model_vectors = np.asarray(model_vectors, dtype="float32")
-    if model_vectors.ndim != 2 or model_vectors.shape != (len(pending_texts), EMBEDDING_DIM):
-        raise ValueError("Embedding model returned an unexpected vector shape")
+    model = get_model()
+    chunk_size = 256
+    for chunk_start in range(0, len(pending_texts), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(pending_texts))
+        model_vectors = model.encode(
+            pending_texts[chunk_start:chunk_end],
+            convert_to_numpy=True,
+            batch_size=64,
+        )
+        model_vectors = np.asarray(model_vectors, dtype="float32")
+        expected_shape = (chunk_end - chunk_start, EMBEDDING_DIM)
+        if model_vectors.ndim != 2 or model_vectors.shape != expected_shape:
+            raise ValueError("Embedding model returned an unexpected vector shape")
 
-    for vector, row_index, weight in zip(model_vectors, pending_rows, pending_weights):
-        vectors[row_index] += vector * weight
-        total_weights[row_index] += weight
+        for offset, vector in enumerate(model_vectors):
+            row_index = pending_rows[chunk_start + offset]
+            weight = pending_weights[chunk_start + offset]
+            vectors[row_index] += vector * weight
+            total_weights[row_index] += weight
 
     populated_rows = total_weights > 0
     vectors[populated_rows] /= total_weights[populated_rows, None]
@@ -165,7 +176,8 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
 
     document_id_lookup: dict[str, set[int]] = {}
     for position, document in enumerate(documents):
-        normalized_id = _normalise(document.get("document_id"))
+        raw_id = str(document.get("document_id") or "").strip()
+        normalized_id = raw_id.casefold()
         if normalized_id:
             document_id_lookup.setdefault(normalized_id, set()).add(position)
 
@@ -319,7 +331,9 @@ def search_category(
     # names, locations and skills are retained as entered; each engine's
     # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
-    exact_identifier_positions = index.document_id_lookup.get(_normalise(query), set())
+    # IDs are case-insensitive but otherwise exact. Do not strip punctuation
+    # or tokenize them: "AB-12" and "AB12" may be distinct identifiers.
+    exact_identifier_positions = index.document_id_lookup.get(query.strip().casefold(), set())
     synonym_expansions = understanding.get("synonym_expansions", [])
     expansion_terms = [
         term
