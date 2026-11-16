@@ -444,6 +444,192 @@ def suggest_source_mapping(
     catalog = discover_source_schema(profile_id, schema=schema)
     return build_source_mapping_suggestions(catalog, schema=schema, table=table)
 
+
+def generate_join_view_preview(
+    profile_id: str,
+    *,
+    base_schema: str,
+    base_table: str,
+    base_id_column: str,
+    view_schema: str,
+    view_name: str,
+    selected_relationships: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Generate, but do not execute, a safe many-to-one SQL Server view script."""
+    for value, label in (
+        (base_schema, "base schema"),
+        (base_table, "base table"),
+        (base_id_column, "base ID column"),
+        (view_schema, "view schema"),
+        (view_name, "view name"),
+    ):
+        if not _IDENTIFIER.fullmatch(value):
+            raise ValueError(f"Invalid {label} identifier")
+    if len(selected_relationships) > 10:
+        raise ValueError("A maximum of 10 relationships can be included in one view preview")
+    if not selected_relationships:
+        raise ValueError("Select at least one foreign-key relationship to generate a join view")
+
+    catalog = discover_source_schema(profile_id)
+    tables = {
+        (item["schema"], item["name"]): item
+        for item in catalog["tables"]
+    }
+    base_key = (base_schema, base_table)
+    base = tables.get(base_key)
+    if base is None:
+        raise ValueError("The selected base table was not found in the discovered source")
+    if base_id_column not in {column["name"] for column in base["columns"]}:
+        raise ValueError("The selected document ID column does not exist on the base table")
+    if base["primary_key_columns"] != [base_id_column]:
+        raise ValueError(
+            "The base table must have this exact single-column primary key to preserve one document per base record"
+        )
+    if (view_schema, view_name) in tables:
+        raise ValueError("The proposed view name already exists as a table or view")
+
+    relationship_lookup = {
+        (
+            item["constraint_name"],
+            item["from_schema"],
+            item["from_table"],
+            item["to_schema"],
+            item["to_table"],
+        ): item
+        for item in catalog["relationships"]
+    }
+    selected: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str, str, str]] = set()
+    for supplied in selected_relationships:
+        key = (
+            supplied.get("constraint_name", ""),
+            supplied.get("from_schema", ""),
+            supplied.get("from_table", ""),
+            supplied.get("to_schema", ""),
+            supplied.get("to_table", ""),
+        )
+        if key in seen_keys:
+            raise ValueError("The same foreign-key relationship was selected more than once")
+        seen_keys.add(key)
+        relationship = relationship_lookup.get(key)
+        if relationship is None:
+            raise ValueError("A selected relationship is not present in the discovered database metadata")
+        selected.append(relationship)
+
+    included = {base_key}
+    ordered_joins: list[tuple[dict[str, Any], tuple[str, str]]] = []
+    pending = list(selected)
+    while pending:
+        progress = False
+        for relationship in list(pending):
+            from_key = (relationship["from_schema"], relationship["from_table"])
+            to_key = (relationship["to_schema"], relationship["to_table"])
+            if from_key in included and to_key in included:
+                raise ValueError("The selected relationships contain a redundant or cyclic join")
+            if to_key in included and from_key not in included:
+                raise ValueError(
+                    "This join would add child rows to a parent base table and could duplicate search documents. "
+                    "Use a many-to-one relationship or create an aggregated source view manually."
+                )
+            if from_key in included and to_key not in included:
+                related = tables.get(to_key)
+                if related is None:
+                    raise ValueError("A related table is not visible to the configured SQL connection")
+                if related["type"] != "BASE TABLE":
+                    raise ValueError("Only declared relationships to base tables are supported in generated joins")
+                ordered_joins.append((relationship, to_key))
+                included.add(to_key)
+                pending.remove(relationship)
+                progress = True
+        if not progress:
+            raise ValueError("Selected relationships do not form a connected path from the base table")
+
+    aliases = {base_key: "t0"}
+    for index, (_, table_key) in enumerate(ordered_joins, start=1):
+        aliases[table_key] = f"t{index}"
+
+    used_output_names = {"DocumentId"}
+
+    def output_name(table_key: tuple[str, str], column_name: str) -> str:
+        base_name = re.sub(
+            r"[^A-Za-z0-9_]",
+            "_",
+            f"{table_key[0]}_{table_key[1]}__{column_name}",
+        ).strip("_") or "field"
+        if not base_name[0].isalpha():
+            base_name = f"field_{base_name}"
+        base_name = base_name[:128]
+        candidate = base_name
+        suffix = 2
+        while candidate.lower() in used_output_names:
+            ending = f"_{suffix}"
+            candidate = f"{base_name[:128 - len(ending)]}{ending}"
+            suffix += 1
+        used_output_names.add(candidate.lower())
+        return candidate
+
+    select_items = [
+        f"{_quote_identifier(aliases[base_key])}.{_quote_identifier(base_id_column)} "
+        "AS [DocumentId]"
+    ]
+    included_in_order = [base_key, *[key for _, key in ordered_joins]]
+    for table_key in included_in_order:
+        table_info = tables[table_key]
+        for column in table_info["columns"]:
+            column_name = str(column["name"])
+            if table_key == base_key and column_name == base_id_column:
+                continue
+            alias_name = output_name(table_key, column_name)
+            select_items.append(
+                f"{_quote_identifier(aliases[table_key])}.{_quote_identifier(column_name)} "
+                f"AS {_quote_identifier(alias_name)}"
+            )
+
+    from_clause = (
+        f"FROM {_quote_identifier(base_schema)}.{_quote_identifier(base_table)} "
+        f"AS {_quote_identifier(aliases[base_key])}"
+    )
+    join_clauses: list[str] = []
+    for relationship, related_key in ordered_joins:
+        from_key = (relationship["from_schema"], relationship["from_table"])
+        from_alias = aliases[from_key]
+        to_alias = aliases[related_key]
+        predicates = [
+            f"{_quote_identifier(from_alias)}.{_quote_identifier(column['from_column'])} = "
+            f"{_quote_identifier(to_alias)}.{_quote_identifier(column['to_column'])}"
+            for column in relationship["columns"]
+        ]
+        join_clauses.append(
+            f"LEFT JOIN {_quote_identifier(related_key[0])}.{_quote_identifier(related_key[1])} "
+            f"AS {_quote_identifier(to_alias)} ON " + " AND ".join(predicates)
+        )
+
+    sql = (
+        f"CREATE OR ALTER VIEW {_quote_identifier(view_schema)}.{_quote_identifier(view_name)} AS\n"
+        "SELECT\n    " + ",\n    ".join(select_items) + "\n"
+        + from_clause + "\n"
+        + "\n".join(join_clauses) + ";\n"
+    )
+    return {
+        "profile_id": profile_id,
+        "database": catalog["database"],
+        "view_schema": view_schema,
+        "view_name": view_name,
+        "document_id_column": "DocumentId",
+        "joined_tables": [
+            {"schema": key[0], "table": key[1]}
+            for key in included_in_order
+        ],
+        "relationship_count": len(ordered_joins),
+        "view_sql": sql,
+        "execution_performed": False,
+        "warnings": [
+            "This endpoint only generates SQL; it does not execute or create the view.",
+            "The generated joins follow child-to-parent foreign keys so the base record remains the document grain.",
+            "Review the selected columns and permissions, then execute the script manually in the development database.",
+        ],
+    }
+
 def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     if not isinstance(config.source, SQLServerSourceConfig):
         raise ValueError("This category does not use a SQL Server source")
