@@ -315,6 +315,7 @@ export interface PlatformSourceValidation {
   non_null_ids: number;
   distinct_ids: number;
   null_id_count: number;
+  blank_id_count: number;
   duplicate_id_count: number;
   max_records: number;
   is_valid: boolean;
