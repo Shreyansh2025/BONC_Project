@@ -264,7 +264,7 @@ _ID_COMPARABLE_TYPES = {
     "uniqueidentifier", "int", "bigint", "smallint", "tinyint", "bit",
     "decimal", "numeric", "float", "real", "money", "smallmoney",
     "date", "datetime", "datetime2", "smalldatetime", "datetimeoffset",
-    "time", "binary", "varbinary", "timestamp", "rowversion",
+    "time",
 }
 
 
