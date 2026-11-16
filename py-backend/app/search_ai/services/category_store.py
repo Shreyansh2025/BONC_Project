@@ -154,11 +154,11 @@ def create_category(config: CategoryConfig, *, updated_by: str) -> dict[str, Any
     try:
         with get_engine().begin() as connection:
             connection.execute(_INSERT_CATEGORY, values)
-        connection.execute(_INSERT_CATEGORY_HISTORY, {
-            **values,
-            "version": 1,
-            "change_reason": "Category created",
-        })
+            connection.execute(_INSERT_CATEGORY_HISTORY, {
+                **values,
+                "version": 1,
+                "change_reason": "Category created",
+            })
     except Exception as exc:
         # Keep database-specific duplicate-key errors out of the API response.
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower() or "2627" in str(exc):
@@ -168,7 +168,11 @@ def create_category(config: CategoryConfig, *, updated_by: str) -> dict[str, Any
 
 
 def update_category(
-    config: CategoryConfig, *, expected_version: int, updated_by: str
+    config: CategoryConfig,
+    *,
+    expected_version: int,
+    updated_by: str,
+    change_reason: str | None = None,
 ) -> dict[str, Any]:
     values = {
         "category_id": config.category_id,
