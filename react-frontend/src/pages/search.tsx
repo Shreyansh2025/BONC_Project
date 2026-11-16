@@ -1,6 +1,13 @@
 import { useState, useEffect } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { Search as SearchIcon, MapPin, Building2, Package, ImageOff } from "lucide-react";
+import {
+  Search as SearchIcon,
+  MapPin,
+  Building2,
+  Package,
+  Layers,
+  ImageOff,
+} from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -24,14 +31,13 @@ import {
 
 // ─── Types ──────────────────────────────────────────────────────────────
 interface SearchResult {
-  _id: string | number;
+  _id?: string | number;
   id?: string | number;
-  type: "business" | "product";
+  type: string;
   image?: string | null;
 
   // business fields
   businessName?: string;
-  name?: string;
   tagline?: string;
   address1?: string;
   city?: string;
@@ -45,8 +51,15 @@ interface SearchResult {
   categoryName?: string;
   brandName?: string;
   businessName_product?: string;
-  minPrice?: string;
-  maxPrice?: string;
+  minPrice?: string | number;
+  maxPrice?: string | number;
+
+  // generic/dynamic entity fields
+  name?: string;
+  title?: string;
+  skills?: string;
+  company?: string;
+  bio?: string;
 
   // shared
   description?: string;
@@ -55,7 +68,6 @@ interface SearchResult {
   matchedKeyword?: string;
 }
 
-// Exact 5-field response contract
 interface SearchResponse {
   Success: boolean;
   Message: string;
@@ -66,15 +78,6 @@ interface SearchResponse {
 
 const PAGE_SIZE_OPTIONS = [5, 10, 15, 20, 30];
 
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(timer);
-  }, [value, delayMs]);
-  return debounced;
-}
-
 function stripHtml(raw?: string): string {
   if (!raw) return "";
   return raw
@@ -83,7 +86,12 @@ function stripHtml(raw?: string): string {
     .trim();
 }
 
-async function fetchSearch(query: string, page: number, pageSize: number, type: string): Promise<SearchResponse> {
+async function fetchSearch(
+  query: string,
+  page: number,
+  pageSize: number,
+  type: string
+): Promise<SearchResponse> {
   const res = await fetch(`/api/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -104,7 +112,15 @@ function matchBadgeVariant(matchType?: string) {
   return "outline" as const;
 }
 
-function EmptyState({ icon: Icon, title, subtitle }: { icon: typeof SearchIcon; title: string; subtitle: string }) {
+function EmptyState({
+  icon: Icon,
+  title,
+  subtitle,
+}: {
+  icon: typeof SearchIcon;
+  title: string;
+  subtitle: string;
+}) {
   return (
     <div className="text-center py-24 border-2 border-dashed rounded-lg bg-muted/10">
       <Icon className="mx-auto h-12 w-12 text-muted-foreground mb-4 opacity-50" />
@@ -165,7 +181,9 @@ function BusinessCard({ item }: { item: SearchResult }) {
     (item.businessName && item.businessName.trim() && item.businessName !== "1"
       ? item.businessName
       : "Unknown Business");
-  const location = [item.address1, item.city, item.state, item.country, item.pincode].filter(Boolean).join(", ");
+  const location = [item.address1, item.city, item.state, item.country, item.pincode]
+    .filter(Boolean)
+    .join(", ");
   const description = stripHtml(item.description);
 
   return (
@@ -266,7 +284,51 @@ function ProductCard({ item }: { item: SearchResult }) {
   );
 }
 
-// Client computes pagination state with page-size selector
+function GenericEntityCard({ item }: { item: SearchResult }) {
+  const name = item.name || item.title || item.productName || item.businessName || "Item";
+  const subtitle = item.title || item.tagline || "";
+  const location = [item.city, item.state, item.country].filter(Boolean).join(", ");
+  const description = stripHtml(item.description || item.bio);
+
+  return (
+    <Card className="hover-elevate transition-all">
+      <CardContent className="p-5 flex gap-4">
+        <ResultThumb src={item.image} alt={name} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Badge variant="outline" className="shrink-0 text-[10px] gap-1 capitalize">
+                <Layers className="h-3 w-3" /> {item.type}
+              </Badge>
+              <h3 className="font-bold text-lg leading-tight truncate">{name}</h3>
+            </div>
+            {item.matchPercentage !== undefined && (
+              <Badge variant={matchBadgeVariant(item.matchType)} className="shrink-0 font-mono text-[10px]">
+                {item.matchType} · {item.matchPercentage.toFixed(0)}%
+              </Badge>
+            )}
+          </div>
+
+          {subtitle && <p className="text-sm text-foreground/90 font-medium mb-1">{subtitle}</p>}
+
+          {location && (
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-2">
+              <MapPin className="h-3.5 w-3.5 shrink-0" />
+              <span>{location}</span>
+            </div>
+          )}
+
+          {description && <p className="text-sm text-foreground/80 line-clamp-2 mb-2">{description}</p>}
+
+          {item.matchedKeyword && (
+            <p className="text-xs text-muted-foreground mt-3 font-mono">Matched: {item.matchedKeyword}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ResultsPagination({
   totalCount,
   currentPage,
@@ -281,7 +343,6 @@ function ResultsPagination({
   onPageSizeChange: (size: number) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-
   const has_previous = currentPage > 1;
   const has_next = currentPage < totalPages;
 
@@ -292,14 +353,13 @@ function ResultsPagination({
 
   return (
     <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-      {/* Page Size Selector */}
       <div className="flex items-center gap-2 text-sm text-muted-foreground order-2 sm:order-1">
         <span>Rows per page</span>
         <Select
           value={String(pageSize)}
           onValueChange={(val) => {
             onPageSizeChange(Number(val));
-            onPageChange(1); // Reset to first page when page size changes
+            onPageChange(1);
           }}
         >
           <SelectTrigger className="h-8 w-[70px]">
@@ -315,7 +375,6 @@ function ResultsPagination({
         </Select>
       </div>
 
-      {/* Pagination Controls */}
       <div className="order-1 sm:order-2">
         {totalPages > 1 && (
           <Pagination>
@@ -368,10 +427,10 @@ function ResultsPagination({
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
-  const [activeSearch, setActiveSearch] = useState(""); 
+  const [activeSearch, setActiveSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [filter, setFilter] = useState<"all" | "business" | "product">("all");
+  const [filter, setFilter] = useState<string>("all");
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -379,7 +438,7 @@ export default function SearchPage() {
       if (trimmedQuery !== activeSearch) {
         setActiveSearch(trimmedQuery);
       }
-    }, 400); 
+    }, 400);
 
     return () => clearTimeout(timer);
   }, [query, activeSearch]);
@@ -397,7 +456,7 @@ export default function SearchPage() {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setActiveSearch(query.trim()); // Bypasses the 400ms wait
+    setActiveSearch(query.trim());
   };
 
   const results = data?.Data ?? [];
@@ -408,10 +467,11 @@ export default function SearchPage() {
     <div className="container py-8 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Search</h1>
-        <p className="text-muted-foreground">Search companies and products together — results are ranked and combined.</p>
+        <p className="text-muted-foreground">
+          Search companies and products together — results are ranked and combined.
+        </p>
       </div>
 
-      {/* Form wrapper handles both the Search Button and the Enter key */}
       <form onSubmit={handleSearchSubmit} className="relative max-w-xl flex gap-2">
         <div className="relative flex-1">
           <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -423,15 +483,15 @@ export default function SearchPage() {
             autoFocus
           />
         </div>
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 text-sm font-medium transition-colors"
         >
           Search
         </button>
       </form>
 
-      {/* FILTER BUTTONS */}
+      {/* FILTER BUTTONS: Built-in company and product filters */}
       <div className="flex gap-2">
         <Badge
           variant={filter === "all" ? "default" : "outline"}
@@ -475,13 +535,12 @@ export default function SearchPage() {
           )}
 
           <div className={`space-y-4 ${isFetching ? "opacity-60" : ""}`}>
-            {results.map((item) =>
-              item.type === "business" ? (
-                <BusinessCard key={`business-${item.id || item._id}`} item={item} />
-              ) : (
-                <ProductCard key={`product-${item.id || item._id}`} item={item} />
-              ),
-            )}
+            {results.map((item, idx) => {
+              const key = `${item.type}-${item.id || item._id || idx}`;
+              if (item.type === "business") return <BusinessCard key={key} item={item} />;
+              if (item.type === "product") return <ProductCard key={key} item={item} />;
+              return <GenericEntityCard key={key} item={item} />;
+            })}
           </div>
 
           {data && (

@@ -55,3 +55,12 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local Python venv & portable Node toolchain
+py-backend/venv/
+tools/node/
+
+# Search-training runtime data (admin-uploaded datasets, entity files, active-model pointer)
+py-backend/data/training/
+py-backend/data/entities/
+py-backend/data/models_config.json

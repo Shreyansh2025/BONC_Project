@@ -10,6 +10,7 @@ import LibraryPage from '@/pages/library';
 import ProductDetailPage from '@/pages/product-detail';
 import HistoryPage from '@/pages/history';
 import SearchPage from '@/pages/search';
+import AdminSearchTrainingPage from '@/pages/admin-search-training';
 
 const queryClient = new QueryClient();
 
@@ -24,6 +25,7 @@ function Router() {
           <Route path="/products/:idOrSlug" component={ProductDetailPage} />
           <Route path="/history" component={HistoryPage} />
           <Route path="/search" component={SearchPage} />
+          <Route path="/admin/search-training" component={AdminSearchTrainingPage} />
           <Route component={NotFound} />
         </Switch>
       </main>

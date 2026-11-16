@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Moon, Sun, Database, History, LayoutDashboard, Search } from "lucide-react";
+import { Moon, Sun, Database, History, LayoutDashboard, Search, BrainCircuit } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
 export function Navbar() {
@@ -37,6 +37,7 @@ export function Navbar() {
     { href: "/products", label: "Library", icon: Database },
     { href: "/search", label: "Search", icon: Search },
     { href: "/history", label: "History", icon: History },
+    { href: "/admin/search-training", label: "Admin Training", icon: BrainCircuit },
   ];
 
   return (

@@ -1,5 +1,8 @@
-import asyncio
 import os
+# Allow multiple OpenMP runtimes on Windows (torch + faiss/onnx)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -13,11 +16,16 @@ load_dotenv()
 from app.config import UPLOADS_DIR  # noqa: E402
 from app.db import connect_sql_server  # noqa: E402
 from app.logger import logger  # noqa: E402
+from app.routes.admin import router as admin_router  # noqa: E402
 from app.routes.brochure import router as brochure_router  # noqa: E402
 from app.routes.health import router as health_router  # noqa: E402
 from app.routes.search import router as search_router  # noqa: E402
 from app.utils import b2b_product_search, b2b_search, product_search  # noqa: E402
 from app.utils.bg_remover import warm_up as warm_up_bg_remover  # noqa: E402
+from app.utils.dynamic_entities import (  # noqa: E402
+    init_dynamic_entities,
+    rebuild_all_dynamic_indices,
+)
 from app.utils.embedding_model import warm_up_model  # noqa: E402
 from app.utils.image_extractor import ensure_dir  # noqa: E402
 
@@ -42,22 +50,15 @@ async def lifespan(app: FastAPI):
     ensure_dir(UPLOADS_DIR)
 
     async def _rebuild_all_indexes(log_verb: str) -> None:
-        """Rebuilds all three search indexes CONCURRENTLY instead of one
-        after another. Each build_index() call does its own full SQL read
-        plus (for two of them) sentence-transformer encoding, so awaiting
-        them sequentially -- as the previous version did, each in its own
-        try/except back to back -- meant startup and every hourly refresh
-        took the SUM of all three builds' time instead of roughly the
-        slowest single one. asyncio.gather(..., return_exceptions=True)
-        launches all three at once while preserving the original behavior
-        that one index failing to build/refresh never stops the others."""
+        """Rebuilds all search indexes CONCURRENTLY, including dynamic entities."""
         results = await asyncio.gather(
             b2b_search.build_index(),
             b2b_product_search.build_index(),
             product_search.build_index(),
+            rebuild_all_dynamic_indices(),
             return_exceptions=True,
         )
-        labels = ["B2B company", "B2B product", "local product"]
+        labels = ["B2B company", "B2B product", "local product", "dynamic entities"]
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
                 logger.error(f"Failed to {log_verb} {label} index: {result}")
@@ -91,37 +92,34 @@ async def lifespan(app: FastAPI):
                 logger.info("Search index refresh retry succeeded.")
 
     async def _connect():
-        """Connects to SQL Server, warms up the embedding model, builds all
-        search indexes, then starts the hourly refresh loop. Routes fail
-        gracefully if this task hasn't finished yet."""
+        """Connects to SQL Server, warms up the embedding model, initializes
+        dynamic entities, builds all search indexes, then starts the hourly refresh loop."""
         try:
             await asyncio.to_thread(connect_sql_server)
         except Exception as err:
             logger.error(f"Failed to connect to SQL Server: {err}")
-            return
 
         try:
             await asyncio.to_thread(warm_up_model)
         except Exception as err:
             logger.error(f"Failed to warm up embedding model: {err}")
-            return  # nothing below can succeed without the model
+            return
 
-        # Build the in-memory search indexes (B2B companies, B2B product
-        # catalog, AND the brochure-extracted local Products table)
-        # concurrently -- see _rebuild_all_indexes above. One build failing
-        # (e.g. b2b_product_search) no longer delays or skips the others.
+        # Initialize dynamic entities (e.g. people)
+        try:
+            await init_dynamic_entities()
+        except Exception as err:
+            logger.error(f"Failed to initialize dynamic entities: {err}")
+
+        # Build in-memory indexes
         await _rebuild_all_indexes("build")
 
-        # Start the hourly refresh loop regardless of which builds above
-        # succeeded — a build that failed this pass gets another chance
-        # next hour instead of being stuck empty until the next restart.
+        # Start hourly refresh loop
         asyncio.create_task(_auto_refresh_indexes())
 
     async def _warm_up_bg_remover():
         try:
             start = time.time()
-            # Loads/downloads the rembg model once here, off the request path,
-            # so the first "Remove Background" click from a user is fast too.
             await asyncio.to_thread(warm_up_bg_remover)
             logger.info(
                 f"rembg model warmed up in {round((time.time() - start) * 1000)}ms"
@@ -137,19 +135,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------------------------------------------------------------------------
-# CORS
-# ---------------------------------------------------------------------------
-# The Python API is called server-to-server from the .NET backend, so CORS
-# (which is only enforced by browsers) does not apply to those calls.
-# allow_origins=["*"] is therefore safe for now.
-#
-# IMPORTANT: allow_credentials=True is intentionally removed. Combining it
-# with allow_origins=["*"] is invalid per the CORS spec and causes browsers
-# to reject credentialed requests. When the React frontend is deployed, set
-# ALLOWED_ORIGINS in .env to the exact frontend domain and re-enable
-# allow_credentials if cookies/auth headers are needed.
-# ---------------------------------------------------------------------------
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
@@ -172,13 +157,14 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# Serve uploaded files at /api/uploads, mirrors express.static
+# Serve uploaded files at /api/uploads
 ensure_dir(UPLOADS_DIR)
 app.mount("/api/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 app.include_router(health_router, prefix="/api")
 app.include_router(brochure_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 
 if __name__ == "__main__":
