@@ -93,7 +93,7 @@ export default function PlatformPanel() {
       setCategories(result);
       if (!selectedCategory && result.length) setSelectedCategory(result[0].config.category_id);
     } catch (e) {
-      setError(getError(e, "Unable to load categories. Apply migration 004 and check the Search AI API."));
+      setError(getError(e, "Unable to load search engines. Apply migration 004 and check the Search AI API."));
     } finally {
       setLoading(false);
     }
@@ -255,8 +255,8 @@ export default function PlatformPanel() {
             changeReason,
           });
       setNotice(editingVersion === null
-        ? "Category created. Next, sync the SQL source or ingest documents."
-        : "Category configuration updated. Re-sync or re-ingest data to rebuild the index.");
+        ? "Engine created. Next, sync its data source or ingest documents."
+        : "Engine configuration updated. Re-sync or re-ingest data to rebuild its index.");
       setEditingVersion(null);
       setChangeReason("");
       setSelectedCategory(saved.config.category_id);
@@ -323,14 +323,14 @@ export default function PlatformPanel() {
     <div className="platform-workspace">
       <section className="panel platform-intro-panel">
         <div className="panel-title-row">
-          <div><span className="section-kicker">NEW / CONFIGURATION-DRIVEN SEARCH</span><h2>Search categories</h2></div>
+          <div><span className="section-kicker">SEARCH ENGINE MANAGEMENT</span><h2>Search engines</h2></div>
           <button type="button" className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button>
         </div>
-        <p className="panel-intro">Create a category with its own source, field mapping and ranking settings. The generic search pipeline runs separately from the existing Company and Product search.</p>
+        <p className="panel-intro">Create a search engine with its own source, field mapping and ranking settings. The generic search pipeline runs separately from the existing Company and Product search.</p>
         {error && <div className="inline-error"><strong>Action failed</strong><span>{error}</span></div>}
         {notice && <div className="success-message">{notice}</div>}
         <div className="platform-category-list">
-          {loading ? <p className="panel-intro">Loading categories…</p> : categories.length === 0 ? <p className="panel-intro">No categories created yet.</p> : categories.map((item) => (
+          {loading ? <p className="panel-intro">Loading categories…</p> : categories.length === 0 ? <p className="panel-intro">No search engines created yet.</p> : categories.map((item) => (
             <article className="platform-category-card" key={item.config.category_id}>
               <div>
                 <strong>{item.config.display_name}</strong>
@@ -348,10 +348,10 @@ export default function PlatformPanel() {
       </section>
 
       <section className="panel platform-form-panel">
-        <div className="panel-title-row"><div><span className="section-kicker">01 / CATEGORY SETUP</span><h2>{editingVersion === null ? "Create a category" : "Edit category"}</h2></div><span className="method-badge">Admin API</span></div>
+        <div className="panel-title-row"><div><span className="section-kicker">01 / CATEGORY SETUP</span><h2>{editingVersion === null ? "Create a search engine" : "Edit search engine"}</h2></div><span className="method-badge">Admin API</span></div>
         <form onSubmit={(event) => void createCategory(event)}>
           <div className="platform-form-grid">
-            <label className="setting-field"><span>Category ID</span><small>Lowercase identifier, e.g. people or articles.</small><input required value={categoryId} onChange={(e) => setCategoryId(e.target.value)} pattern="[a-z][a-z0-9_-]{1,62}" /></label>
+            <label className="setting-field"><span>Engine ID</span><small>Lowercase identifier, e.g. people or articles.</small><input required value={categoryId} onChange={(e) => setCategoryId(e.target.value)} pattern="[a-z][a-z0-9_-]{1,62}" /></label>
             <label className="setting-field"><span>Display name</span><input required value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></label>
             <label className="setting-field wide"><span>Description</span><input value={description} onChange={(e) => setDescription(e.target.value)} /></label>
           </div>
@@ -406,7 +406,7 @@ export default function PlatformPanel() {
             <label className="platform-checkbox"><input type="checkbox" checked={publicEnabled} onChange={(e) => setPublicEnabled(e.target.checked)} /> Allow public search (only enable for approved non-sensitive data)</label>
             <label className="setting-field wide"><span>Change reason</span><input value={changeReason} onChange={(e) => setChangeReason(e.target.value)} maxLength={1000} placeholder="Why are you creating or changing this category?" /></label>
           </div>
-          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create category" : "Save category changes"}</button>
+          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create search engine" : "Save engine changes"}</button>
             {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => {
               setEditingVersion(null);
               setCategoryId("people");
@@ -433,10 +433,10 @@ export default function PlatformPanel() {
       </section>
 
       <section className="panel platform-test-panel">
-        <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test category data</h2></div><span className="method-badge">Admin only</span></div>
+        <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test engine data</h2></div><span className="method-badge">Admin only</span></div>
         <div className="platform-form-grid">
-          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select a category</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
-          <div className="setting-field"><span>Selected source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
+          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select an engine</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
+          <div className="setting-field"><span>Selected engine source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
         </div>
         {selectedRecord?.config.source.type === "push" && <form onSubmit={(event) => void ingest(event)}>
           <label className="setting-field"><span>Normalized documents (JSON array)</span><textarea className="platform-json-input" rows={9} value={rawDocuments} onChange={(e) => setRawDocuments(e.target.value)} spellCheck={false} /></label>
@@ -446,7 +446,7 @@ export default function PlatformPanel() {
           <div className="platform-form-grid">
             <label className="setting-field wide"><span>Natural-language test query</span><input value={query} onChange={(e) => setQuery(e.target.value)} required placeholder="e.g. Shreyansh OCR expert in Indore" /></label>
           </div>
-          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={!selectedCategory || searching}>{searching ? "Searching…" : "Test category search"}</button></div>
+          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={!selectedCategory || searching}>{searching ? "Searching…" : "Test engine search"}</button></div>
         </form>
         {feedbackSummary && <div className="platform-history">
           <div className="settings-section-title"><div><h3>Relevance feedback</h3><p>Admin-labelled examples collected for future evaluation and model training.</p></div></div>
