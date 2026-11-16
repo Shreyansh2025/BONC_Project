@@ -495,6 +495,7 @@ class SearchPlatformModelTests(unittest.TestCase):
         connection.execute.return_value.mappings.return_value.one.return_value = {
             "total_rows": 10,
             "non_null_ids": 8,
+            "blank_ids": 0,
             "distinct_ids": 7,
         }
         engine = unittest.mock.MagicMock()
