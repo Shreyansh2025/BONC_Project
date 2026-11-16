@@ -1,7 +1,7 @@
 """Validation tests for generic search category configuration."""
 import unittest
 from collections import Counter
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -490,7 +490,7 @@ class SearchPlatformModelTests(unittest.TestCase):
             }],
             "relationships": [],
         }
-        connection = unittest.mock.MagicMock()
+        connection = MagicMock()
         connection.__enter__.return_value = connection
         connection.execute.return_value.mappings.return_value.one.return_value = {
             "total_rows": 10,
