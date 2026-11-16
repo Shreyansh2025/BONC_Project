@@ -185,6 +185,10 @@ def admin_record_category_feedback(
             is_relevant=body.is_relevant,
             comment=body.comment,
             created_by=actor,
+            result_rank=body.result_rank,
+            result_score=body.result_score,
+            config_version=body.config_version,
+            index_version=body.index_version,
         )
     except category_store.CategoryNotFoundError as exc:
         raise _not_found(exc) from exc
