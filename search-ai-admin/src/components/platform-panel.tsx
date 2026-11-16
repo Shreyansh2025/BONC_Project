@@ -155,13 +155,20 @@ export default function PlatformPanel() {
   const joinableRelationships = useMemo(() => {
     const relationships = sourceCatalog?.relationships || [];
     if (!sourceCatalog || !table) return [];
+    const keyFor = (relationship: PlatformSourceRelationship) => [
+      relationship.constraint_name,
+      relationship.from_schema,
+      relationship.from_table,
+      relationship.to_schema,
+      relationship.to_table,
+    ].join("|");
     const selected = new Set(selectedJoinRelationships);
     const includedTables = new Set([schema + "." + table]);
     let changed = true;
     while (changed) {
       changed = false;
       for (const relationship of relationships) {
-        if (!selected.has(relationshipKey(relationship))) continue;
+        if (!selected.has(keyFor(relationship))) continue;
         const fromKey = relationship.from_schema + "." + relationship.from_table;
         const toKey = relationship.to_schema + "." + relationship.to_table;
         if (includedTables.has(fromKey) && !includedTables.has(toKey)) {
@@ -171,7 +178,7 @@ export default function PlatformPanel() {
       }
     }
     return relationships.filter((relationship) => {
-      const key = relationshipKey(relationship);
+      const key = keyFor(relationship);
       if (selected.has(key)) return true;
       const fromKey = relationship.from_schema + "." + relationship.from_table;
       const toKey = relationship.to_schema + "." + relationship.to_table;
