@@ -6,6 +6,7 @@ import {
   ingestPlatformDocuments,
   runPlatformAdminSearch,
   syncPlatformCategory,
+  updatePlatformCategory,
   type PlatformCategoryConfig,
   type PlatformCategoryRecord,
   type PlatformFieldConfig,
@@ -63,6 +64,10 @@ export default function PlatformPanel() {
   const [minScore, setMinScore] = useState(20);
   const [lexicalWeight, setLexicalWeight] = useState(0.65);
   const [semanticWeight, setSemanticWeight] = useState(0.35);
+  const [lexicalEnabled, setLexicalEnabled] = useState(true);
+  const [semanticEnabled, setSemanticEnabled] = useState(true);
+  const [candidateLimit, setCandidateLimit] = useState(50);
+  const [editingVersion, setEditingVersion] = useState<number | null>(null);
 
   const [selectedCategory, setSelectedCategory] = useState("");
   const [rawDocuments, setRawDocuments] = useState('[\n  {\n    "document_id": "person-1",\n    "title": "Shreyansh",\n    "fields": { "name": "Shreyansh", "skills": "OCR, Python", "bio": "Document processing developer", "location": "Indore" }\n  }\n]');
@@ -114,6 +119,34 @@ export default function PlatformPanel() {
     setFields((current) => current.filter((_, i) => i !== index));
   };
 
+  const loadCategoryForEdit = (item: PlatformCategoryRecord) => {
+    const config = item.config;
+    setCategoryId(config.category_id);
+    setDisplayName(config.display_name);
+    setDescription(config.description || "");
+    setSourceType(config.source.type);
+    if (config.source.type === "sqlserver") {
+      setConnectionEnv(config.source.connection_env);
+      setSchema(config.source.schema);
+      setTable(config.source.table);
+      setIdColumn(config.source.id_column);
+      setMaxRecords(config.source.max_records);
+    }
+    setFields(config.fields.map((field) => ({ ...field, aliases: [...field.aliases] })));
+    setMinScore(config.rules.semantic_min_score);
+    setLexicalWeight(config.rules.lexical_weight);
+    setSemanticWeight(config.rules.semantic_weight);
+    setLexicalEnabled(config.rules.lexical_enabled);
+    setSemanticEnabled(config.rules.semantic_enabled);
+    setCandidateLimit(config.rules.semantic_candidate_limit);
+    setPublicEnabled(config.public_search_enabled);
+    setEditingVersion(item.config_version);
+    setSelectedCategory(config.category_id);
+    setSearchResult(null);
+    setNotice("Editing " + config.display_name + ". Save changes to create a new configuration version.");
+    setError("");
+  };
+
   const createCategory = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSaving(true);
@@ -138,15 +171,27 @@ export default function PlatformPanel() {
         fields,
         rules: {
           ...DEFAULT_RULES,
+          lexical_enabled: lexicalEnabled,
+          semantic_enabled: semanticEnabled,
           semantic_min_score: minScore,
+          semantic_candidate_limit: candidateLimit,
           lexical_weight: lexicalWeight,
           semantic_weight: semanticWeight,
         },
         active: true,
         public_search_enabled: publicEnabled,
       };
-      const saved = await createPlatformCategory(config);
-      setNotice("Category created. Next, sync the SQL source or ingest documents.");
+      const saved = editingVersion === null
+        ? await createPlatformCategory(config)
+        : await updatePlatformCategory({
+            categoryId: config.category_id,
+            expectedVersion: editingVersion,
+            config,
+          });
+      setNotice(editingVersion === null
+        ? "Category created. Next, sync the SQL source or ingest documents."
+        : "Category configuration updated. Re-sync or re-ingest data to rebuild the index.");
+      setEditingVersion(null);
       setSelectedCategory(saved.config.category_id);
       await refresh();
     } catch (e) {
@@ -171,7 +216,7 @@ export default function PlatformPanel() {
     }
   };
 
-  const ingest = async (event: React.FormEvent<HTMLFormElement>) => {
+  const ingest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedCategory) return;
     setIngesting(true);
@@ -189,7 +234,7 @@ export default function PlatformPanel() {
     }
   };
 
-  const runTestSearch = async (event: React.FormEvent<HTMLFormElement>) => {
+  const runTestSearch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedCategory) return;
     setSearching(true);
@@ -225,6 +270,7 @@ export default function PlatformPanel() {
               </div>
               <div className="platform-category-actions">
                 <button type="button" className="secondary-button" onClick={() => setSelectedCategory(item.config.category_id)}>Test</button>
+                <button type="button" className="secondary-button" onClick={() => loadCategoryForEdit(item)}>Edit</button>
                 {item.config.source.type === "sqlserver" && <button type="button" className="secondary-button" disabled={syncing === item.config.category_id} onClick={() => void syncCategory(item.config.category_id)}>{syncing === item.config.category_id ? "Syncing…" : "Sync source"}</button>}
               </div>
             </article>
@@ -233,7 +279,7 @@ export default function PlatformPanel() {
       </section>
 
       <section className="panel platform-form-panel">
-        <div className="panel-title-row"><div><span className="section-kicker">01 / CATEGORY SETUP</span><h2>Create a category</h2></div><span className="method-badge">Admin API</span></div>
+        <div className="panel-title-row"><div><span className="section-kicker">01 / CATEGORY SETUP</span><h2>{editingVersion === null ? "Create a category" : "Edit category"}</h2></div><span className="method-badge">Admin API</span></div>
         <form onSubmit={(event) => void createCategory(event)}>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Category ID</span><small>Lowercase identifier, e.g. people or articles.</small><input required value={categoryId} onChange={(e) => setCategoryId(e.target.value)} pattern="[a-z][a-z0-9_-]{1,62}" /></label>
@@ -271,11 +317,15 @@ export default function PlatformPanel() {
           <div className="settings-section-title"><div><h3>Search rules</h3><p>These are runtime ranking configurations, not model fine-tuning.</p></div></div>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Minimum semantic score</span><input type="number" min="0" max="100" step="0.5" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} /></label>
+            <label className="setting-field"><span>Semantic candidate limit</span><input type="number" min="1" max="200" value={candidateLimit} onChange={(e) => setCandidateLimit(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Lexical weight</span><input type="number" min="0" max="1" step="0.05" value={lexicalWeight} onChange={(e) => setLexicalWeight(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Semantic weight</span><input type="number" min="0" max="1" step="0.05" value={semanticWeight} onChange={(e) => setSemanticWeight(Number(e.target.value))} /></label>
+            <label className="platform-checkbox"><input type="checkbox" checked={lexicalEnabled} onChange={(e) => setLexicalEnabled(e.target.checked)} /> Enable keyword matching</label>
+            <label className="platform-checkbox"><input type="checkbox" checked={semanticEnabled} onChange={(e) => setSemanticEnabled(e.target.checked)} /> Enable semantic matching</label>
             <label className="platform-checkbox"><input type="checkbox" checked={publicEnabled} onChange={(e) => setPublicEnabled(e.target.checked)} /> Allow public search (only enable for approved non-sensitive data)</label>
           </div>
-          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Creating…" : "Create category"}</button></div>
+          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create category" : "Save category changes"}</button>
+            {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => setEditingVersion(null)}>Cancel edit</button>}</div>
         </form>
       </section>
 
