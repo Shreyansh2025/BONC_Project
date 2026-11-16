@@ -58,7 +58,8 @@ def interpret_query(
     matched_aliases: dict[str, list[str]] = {}
     matched_values: dict[str, list[str]] = {}
     matched_fields: dict[str, list[str]] = {}
-    removed_phrases: set[str] = set()
+    alias_phrases: set[str] = set()
+    recognised_phrases: set[str] = set()
 
     for field in config.fields:
         if not field.searchable:
@@ -70,7 +71,8 @@ def interpret_query(
             # Ignore one-character aliases: they are too likely to match noise.
             if len(alias_text.replace(" ", "")) >= 2 and contains_phrase(normalised, alias_text):
                 aliases.add(alias.strip())
-                removed_phrases.add(alias_text)
+                alias_phrases.add(alias_text)
+                recognised_phrases.add(alias_text)
 
         if field_values is not None:
             candidates = field_values.get(field.key, set())
@@ -89,7 +91,7 @@ def interpret_query(
             normalised_value = normalise_query(value_text)
             if len(normalised_value.replace(" ", "")) >= 2 and contains_phrase(normalised, normalised_value):
                 values.add(value_text)
-                removed_phrases.add(normalised_value)
+                recognised_phrases.add(normalised_value)
 
         if aliases:
             matched_aliases[field.key] = sorted(aliases)
@@ -101,8 +103,8 @@ def interpret_query(
 
     # Aliases describe the kind of information sought (e.g. "expertise" means
     # the skills field); they are not necessarily literal terms in a document.
-    lexical_query = _without_phrases(normalised, removed_phrases)
-    recognised_tokens = set(" ".join(removed_phrases).split())
+    lexical_query = _without_phrases(normalised, alias_phrases)
+    recognised_tokens = set(" ".join(recognised_phrases).split())
     unmatched_tokens = sorted({
         token for token in normalised.split()
         if token not in _STOP_WORDS and token not in recognised_tokens
