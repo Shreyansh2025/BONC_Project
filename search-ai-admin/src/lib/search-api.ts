@@ -195,6 +195,13 @@ export interface PlatformRulesConfig {
   semantic_weight: number;
 }
 
+export interface PlatformSourceFilter {
+  column: string;
+  operator: "eq" | "ne" | "in" | "is_null" | "not_null";
+  value?: string | number | boolean | null;
+  values?: Array<string | number | boolean>;
+}
+
 export interface PlatformCategoryConfig {
   category_id: string;
   display_name: string;
@@ -208,12 +215,7 @@ export interface PlatformCategoryConfig {
         table: string;
         id_column: string;
         max_records: number;
-        filters: Array<{
-          column: string;
-          operator: "eq" | "ne" | "in" | "is_null" | "not_null";
-          value?: string | number | boolean | null;
-          values?: Array<string | number | boolean>;
-        }>;
+        filters: PlatformSourceFilter[];
       };
   fields: PlatformFieldConfig[];
   rules: PlatformRulesConfig;
