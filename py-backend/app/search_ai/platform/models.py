@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -73,7 +73,7 @@ class PushSourceConfig(StrictModel):
     type: Literal["push"] = "push"
 
 
-SourceConfig = SQLServerSourceConfig | PushSourceConfig
+SourceConfig = Annotated[SQLServerSourceConfig | PushSourceConfig, Field(discriminator="type")]
 
 
 class CategoryRules(StrictModel):
@@ -101,6 +101,9 @@ class CategoryConfig(StrictModel):
     fields: list[SearchFieldConfig] = Field(min_length=1, max_length=30)
     rules: CategoryRules = Field(default_factory=CategoryRules)
     active: bool = True
+    # Categories are private by default. Public endpoints must never expose
+    # people or other restricted records unless an operator explicitly opts in.
+    public_search_enabled: bool = False
 
     @field_validator("category_id")
     @classmethod
