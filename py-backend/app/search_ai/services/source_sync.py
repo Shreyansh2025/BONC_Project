@@ -62,7 +62,8 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
         raise ValueError("Invalid SQL schema name")
 
     engine = _engine_from_environment_name(f"SEARCH_SOURCE_{profile_id}")
-    query = text("""
+    schema_clause = "AND tables_view.TABLE_SCHEMA = :schema_name" if schema else ""
+    query = text(f"""
         SELECT tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, tables_view.TABLE_TYPE,
                columns_view.COLUMN_NAME, columns_view.DATA_TYPE,
                columns_view.IS_NULLABLE, columns_view.ORDINAL_POSITION
@@ -70,14 +71,15 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
         INNER JOIN INFORMATION_SCHEMA.COLUMNS AS columns_view
             ON tables_view.TABLE_SCHEMA = columns_view.TABLE_SCHEMA
            AND tables_view.TABLE_NAME = columns_view.TABLE_NAME
-        WHERE (:schema_name IS NULL OR tables_view.TABLE_SCHEMA = :schema_name)
-          AND tables_view.TABLE_TYPE IN (N'BASE TABLE', N'VIEW')
+        WHERE tables_view.TABLE_TYPE IN (N'BASE TABLE', N'VIEW')
+          {schema_clause}
         ORDER BY tables_view.TABLE_SCHEMA, tables_view.TABLE_NAME, columns_view.ORDINAL_POSITION
     """)
     try:
         with engine.connect() as connection:
             database_name = connection.execute(text("SELECT DB_NAME()")).scalar_one()
-            rows = connection.execute(query, {"schema_name": schema}).mappings().all()
+            parameters = {"schema_name": schema} if schema else {}
+            rows = connection.execute(query, parameters).mappings().all()
     finally:
         engine.dispose()
 
