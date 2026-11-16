@@ -13,6 +13,11 @@ import numpy as np
 from app.search_ai.platform.models import CategoryConfig
 from app.search_ai.services import category_store
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
+from app.search_ai.services.query_understanding import (
+    contains_phrase as _contains_phrase,
+    interpret_query,
+    normalise_query,
+)
 from app.search_ai.services.search_common import (
     build_inverted_index,
     build_vocabulary,
@@ -40,15 +45,7 @@ _INDEXES: dict[str, CategoryIndex] = {}
 
 
 def _normalise(value: Any) -> str:
-    return " ".join(_TOKEN_RE.findall(str(value or "").lower()))
-
-
-def _contains_phrase(normal_query: str, phrase: str) -> bool:
-    phrase = _normalise(phrase)
-    if not normal_query or not phrase:
-        return False
-    pattern = r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])"
-    return re.search(pattern, normal_query) is not None
+    return normalise_query(value)
 
 
 def _field_text(config: CategoryConfig, document: dict[str, Any], *, semantic_only: bool = False) -> str:
@@ -132,45 +129,13 @@ def _query_understanding(
     documents: list[dict[str, Any]] | None = None,
     field_values: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
-    """Lightweight, data-driven field hint extraction.
-
-    It identifies field values/aliases explicitly present in the query. It
-    does not pretend to infer entities that are absent from the source data;
-    semantic matching still evaluates the complete natural-language query.
-    """
-    normal_query = _normalise(query)
-    query_tokens = set(normal_query.split())
-    field_hints: dict[str, list[str]] = {}
-    for field in config.fields:
-        if not field.searchable:
-            continue
-        recognised: set[str] = set()
-        for alias in field.aliases:
-            alias_text = _normalise(alias)
-            if alias_text and _contains_phrase(normal_query, alias_text):
-                recognised.add(alias)
-        if field_values is not None:
-            candidates = field_values.get(field.key, set())
-        else:
-            candidates = set()
-            for doc in documents or []:
-                raw = doc.get("fields", {}).get(field.key)
-                if raw is not None:
-                    candidates.update(value.strip() for value in str(raw).split(",") if value.strip())
-        for value in candidates:
-            candidate = _normalise(value)
-            if len(candidate) >= 2 and _contains_phrase(normal_query, candidate):
-                recognised.add(str(value).strip())
-        if recognised:
-            field_hints[field.key] = sorted(recognised)
-    return {
-        "normalised_query": normal_query,
-        "matched_fields": field_hints,
-        "unmatched_tokens": sorted(
-            token for token in query_tokens
-            if not any(token in _normalise(value).split() for values in field_hints.values() for value in values)
-        ),
-    }
+    """Compatibility wrapper around the shared query interpretation module."""
+    return interpret_query(
+        query,
+        config,
+        documents=documents,
+        field_values=field_values,
+    )
 
 
 def _lexical_score(query: str, config: CategoryConfig, document: dict[str, Any]) -> tuple[float, list[str]]:
@@ -226,13 +191,13 @@ def search_category(
 
     index = _get_category_index(category)
     docs = index.documents
-    understanding = _query_understanding(
+    understanding = interpret_query(
         query, config, field_values=index.field_values
     )
-    # Spell correction is learned from this category's own indexed vocabulary,
-    # so a person's name or a specialist term is not corrected using the
-    # Product catalog's vocabulary.
-    lexical_query = correct_query(_normalise(query), index.vocabulary)
+    # Only generic residual words are spell-corrected. Exact values such as
+    # names, locations and skills are retained as entered; each engine's
+    # indexed vocabulary remains isolated from every other engine.
+    lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
     scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
@@ -304,6 +269,17 @@ def search_category(
         "query": query,
         "category": category_id,
         "query_understanding": understanding,
+        "query_plan": {
+            "query_type": understanding["query_type"],
+            "matched_aliases": understanding["matched_aliases"],
+            "matched_values": understanding["matched_values"],
+            "constraints": understanding["constraints"],
+            "unmatched_tokens": understanding["unmatched_tokens"],
+            "lexical_query": lexical_query,
+            "semantic_query": query,
+            "filters_applied": False,
+            "explanation": understanding["explanation"],
+        },
         "corrected_query": lexical_query,
         "data": scored[offset: offset + page_size],
         "total_count": total,
