@@ -46,12 +46,40 @@ def public_categories():
             "description": item["config"].description,
         }
         for item in category_store.list_categories()
-        if item["status"] == "active" and item["config"].active
+        if (
+            item["status"] == "active"
+            and item["config"].active
+            and item["config"].public_search_enabled
+        )
     ]
 
 
 @router.post("/search")
 def platform_search_endpoint(body: PlatformSearchRequest):
+    try:
+        category = category_store.get_category(body.category)
+        if category["status"] != "active" or not category["config"].active:
+            raise HTTPException(status_code=404, detail="Search category not found")
+        if not category["config"].public_search_enabled:
+            raise HTTPException(status_code=403, detail="This search category is not publicly available")
+        return platform_search.search_category(
+            query=body.query,
+            category_id=body.category,
+            page=body.page,
+            page_size=body.page_size,
+        )
+    except category_store.CategoryNotFoundError as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@admin_router.post("/search")
+def admin_search_category(
+    body: PlatformSearchRequest,
+    authorization: str | None = Header(default=None),
+):
+    _require_admin(authorization)
     try:
         return platform_search.search_category(
             query=body.query,
@@ -119,10 +147,20 @@ def admin_ingest_documents(
     actor = _require_admin(authorization)
     try:
         category_store.get_category(category_id)
+        category_config = category_store.get_category(category_id)["config"]
+        allowed_fields = {field.key for field in category_config.fields}
+        for document in body.documents:
+            unknown_fields = set(document.fields) - allowed_fields
+            if unknown_fields:
+                raise ValueError(
+                    "Document contains fields not configured for this category: "
+                    + ", ".join(sorted(unknown_fields))
+                )
         count = category_store.replace_documents(
             category_id,
             body.documents,
             updated_by=actor,
+            replace_all=body.replace_all,
         )
         platform_search.invalidate_category_index(category_id)
         return {"status": "ok", "category_id": category_id, "documents_ingested": count}
