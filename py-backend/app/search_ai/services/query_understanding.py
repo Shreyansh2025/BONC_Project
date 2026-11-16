@@ -11,7 +11,7 @@ from typing import Any
 from app.search_ai.platform.models import CategoryConfig
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[+#]+)?")
 _STOP_WORDS = {"a", "an", "and", "at", "for", "in", "near", "of", "on", "the", "to", "with"}
 
 
@@ -25,7 +25,7 @@ def contains_phrase(normal_query: str, phrase: str) -> bool:
     phrase_text = normalise_query(phrase)
     if not normal_query or not phrase_text:
         return False
-    pattern = r"(?<![a-z0-9])" + re.escape(phrase_text) + r"(?![a-z0-9])"
+    pattern = r"(?<![a-z0-9+#])" + re.escape(phrase_text) + r"(?![a-z0-9+#])"
     return re.search(pattern, normal_query) is not None
 
 
@@ -54,7 +54,7 @@ def _without_phrases(query: str, phrases: set[str]) -> str:
     for phrase in sorted(phrases, key=lambda item: (-len(item), item)):
         if not phrase:
             continue
-        pattern = r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])"
+        pattern = r"(?<![a-z0-9+#])" + re.escape(phrase) + r"(?![a-z0-9+#])"
         result = re.sub(pattern, " ", result)
     return " ".join(result.split())
 
