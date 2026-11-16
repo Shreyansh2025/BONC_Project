@@ -5,10 +5,10 @@ import hmac
 import os
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.search_ai.platform.models import CategoryConfig, IngestRequest, PlatformSearchRequest
+from app.search_ai.platform.models import CategoryConfig, IngestRequest, PlatformSearchRequest, SearchFeedbackRequest
 from app.search_ai.services import category_store, platform_search, source_sync
 
 router = APIRouter(prefix="/api/platform", tags=["Search AI platform"])
@@ -138,6 +138,39 @@ def admin_update_category(
         raise _not_found(exc) from exc
     except category_store.CategoryStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@admin_router.post("/categories/{category_id}/feedback", status_code=201)
+def admin_record_category_feedback(
+    category_id: str,
+    body: SearchFeedbackRequest,
+    authorization: str | None = Header(default=None),
+):
+    actor = _require_admin(authorization)
+    try:
+        return category_store.record_feedback(
+            category_id,
+            query=body.query,
+            document_id=body.document_id,
+            is_relevant=body.is_relevant,
+            comment=body.comment,
+            created_by=actor,
+        )
+    except category_store.CategoryNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@admin_router.get("/categories/{category_id}/feedback")
+def admin_get_category_feedback(
+    category_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    authorization: str | None = Header(default=None),
+):
+    _require_admin(authorization)
+    try:
+        return category_store.get_feedback(category_id, limit=limit)
+    except category_store.CategoryNotFoundError as exc:
+        raise _not_found(exc) from exc
 
 
 @admin_router.get("/categories/{category_id}/history")
