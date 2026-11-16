@@ -692,6 +692,7 @@ export default function PlatformPanel() {
                   </p>
                   <p>
                     {sourceValidation.null_id_count.toLocaleString()} NULL IDs ·
+                    {" " + sourceValidation.blank_id_count.toLocaleString()} blank IDs ·
                     {" " + sourceValidation.duplicate_id_count.toLocaleString()} duplicate IDs
                   </p>
                   {sourceValidation.warnings.map((warning) => <small key={warning}>{warning}</small>)}
