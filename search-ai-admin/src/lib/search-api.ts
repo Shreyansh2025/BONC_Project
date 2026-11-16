@@ -406,6 +406,7 @@ export interface PlatformSearchResult {
   phrase_score?: number;
   semantic_score: number;
   matched_fields: string[];
+  exact_identifier_match?: boolean;
   category: string;
 }
 
