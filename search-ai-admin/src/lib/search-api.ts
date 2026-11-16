@@ -287,6 +287,19 @@ export interface PlatformSourceMappingSuggestions {
   warnings: string[];
 }
 
+export interface PlatformJoinViewPreview {
+  profile_id: string;
+  database: string;
+  view_schema: string;
+  view_name: string;
+  document_id_column: string;
+  joined_tables: Array<{ schema: string; table: string }>;
+  relationship_count: number;
+  view_sql: string;
+  execution_performed: false;
+  warnings: string[];
+}
+
 export async function getPlatformSourceProfiles(): Promise<PlatformSourceProfile[]> {
   const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/sources`, {
     headers: { Accept: "application/json" },
@@ -324,6 +337,39 @@ export async function suggestPlatformSourceMapping(input: {
     { headers: { Accept: "application/json" } },
   );
   return readJson<PlatformSourceMappingSuggestions>(response);
+}
+
+export async function previewPlatformJoinView(input: {
+  profileId: string;
+  baseSchema: string;
+  baseTable: string;
+  baseIdColumn: string;
+  viewSchema: string;
+  viewName: string;
+  selectedRelationships: PlatformSourceRelationship[];
+}): Promise<PlatformJoinViewPreview> {
+  const response = await fetch(
+    `${SEARCH_API_BASE}/api/admin/platform/sources/${encodeURIComponent(input.profileId)}/join-view-preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        base_schema: input.baseSchema,
+        base_table: input.baseTable,
+        base_id_column: input.baseIdColumn,
+        view_schema: input.viewSchema,
+        view_name: input.viewName,
+        selected_relationships: input.selectedRelationships.map((relationship) => ({
+          constraint_name: relationship.constraint_name,
+          from_schema: relationship.from_schema,
+          from_table: relationship.from_table,
+          to_schema: relationship.to_schema,
+          to_table: relationship.to_table,
+        })),
+      }),
+    },
+  );
+  return readJson<PlatformJoinViewPreview>(response);
 }
 
 export interface PlatformCategoryRecord {
