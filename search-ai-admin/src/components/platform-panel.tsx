@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import {
   createPlatformCategory,
   discoverPlatformSourceSchema,
+  suggestPlatformSourceMapping,
   getPlatformSourceProfiles,
   getPlatformCategories,
   getPlatformCategoryHistory,
@@ -22,6 +23,7 @@ import {
   type PlatformSearchResponse,
   type PlatformSourceProfile,
   type PlatformSourceCatalog,
+  type PlatformSourceMappingSuggestions,
 } from "../lib/search-api";
 
 const ROLE_OPTIONS: PlatformFieldRole[] = ["title", "skill", "location", "category", "description", "general"];
@@ -68,6 +70,8 @@ export default function PlatformPanel() {
   const [sourceProfiles, setSourceProfiles] = useState<PlatformSourceProfile[]>([]);
   const [sourceCatalog, setSourceCatalog] = useState<PlatformSourceCatalog | null>(null);
   const [discoveringSource, setDiscoveringSource] = useState(false);
+  const [suggestingMapping, setSuggestingMapping] = useState(false);
+  const [mappingSuggestions, setMappingSuggestions] = useState<PlatformSourceMappingSuggestions | null>(null);
   const [schema, setSchema] = useState("dbo");
   const [table, setTable] = useState("Users");
   const [idColumn, setIdColumn] = useState("UserId");
@@ -256,25 +260,62 @@ export default function PlatformPanel() {
     try {
       const catalog = await discoverPlatformSourceSchema({ profileId: sourceProfileId });
       setSourceCatalog(catalog);
+      setMappingSuggestions(null);
       const nextSchema = catalog.schemas.includes(schema) ? schema : (catalog.schemas[0] || "dbo");
       const tables = catalog.tables.filter((item) => item.schema === nextSchema);
       const selected = tables.find((item) => item.name === table) ?? tables[0];
       setSchema(nextSchema);
       if (selected) {
         setTable(selected.name);
-        setIdColumn((current) => selected.columns.some((column) => column.name === current)
+        const primaryKey = selected.primary_key_columns?.length === 1
+          ? selected.primary_key_columns[0]
+          : "";
+        setIdColumn((current) => primaryKey || (selected.columns.some((column) => column.name === current)
           ? current
-          : (selected.columns.find((column) => /id$/i.test(column.name))?.name || selected.columns[0]?.name || ""));
+          : (selected.columns.find((column) => /id$/i.test(column.name))?.name || "")));
       } else {
         setTable("");
         setIdColumn("");
       }
-      setNotice("Connected to profile " + sourceProfileId + " (" + catalog.database + "). Discovered " + catalog.tables.length.toLocaleString() + " tables/views.");
+      setNotice(
+        "Connected to profile " + sourceProfileId + " (" + catalog.database + "). Discovered " +
+        catalog.tables.length.toLocaleString() + " tables/views and " +
+        (catalog.relationships?.length || 0).toLocaleString() + " declared foreign-key relationships."
+      );
     } catch (e) {
       setSourceCatalog(null);
       setError(getError(e, "Unable to inspect the configured SQL source."));
     } finally {
       setDiscoveringSource(false);
+    }
+  };
+
+  const applyMappingSuggestions = async () => {
+    if (!sourceProfileId || !schema || !table) return;
+    setSuggestingMapping(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await suggestPlatformSourceMapping({
+        profileId: sourceProfileId,
+        schema,
+        table,
+      });
+      const safeFields = result.fields.map(({ confidence: _confidence, reason: _reason, ...field }) => field);
+      setFields(safeFields);
+      if (result.id_column_suggestion.column) {
+        setIdColumn(result.id_column_suggestion.column);
+      }
+      setMappingSuggestions(result);
+      const warnings = result.warnings.length ? " Review: " + result.warnings.join(" ") : "";
+      setNotice(
+        "Generated " + result.fields.length + " field suggestions for " + schema + "." + table +
+        ". Identifier: " + (result.id_column_suggestion.column || "manual selection required") + "." + warnings
+      );
+    } catch (e) {
+      setError(getError(e, "Unable to suggest field mappings."));
+    } finally {
+      setSuggestingMapping(false);
     }
   };
 
@@ -454,7 +495,10 @@ export default function PlatformPanel() {
                     setIdColumn(nextTable?.columns.find((column) => /id$/i.test(column.name))?.name || nextTable?.columns[0]?.name || "");
                   }} required>
                     <option value="">Select table or view</option>
-                    {sourceTables.map((item) => <option key={item.name} value={item.name}>{item.name} ({item.type === "VIEW" ? "view" : "table"})</option>)}
+                    {sourceTables.map((item) => <option key={item.name} value={item.name}>
+                      {item.name} ({item.type === "VIEW" ? "view" : "table"})
+                      {item.primary_key_columns?.length ? " · PK: " + item.primary_key_columns.join(", ") : ""}
+                    </option>)}
                   </select>
                 : <input value={table} onChange={(e) => setTable(e.target.value)} required />}</label>
               <label className="setting-field"><span>Unique ID column</span>{sourceCatalog
@@ -467,6 +511,23 @@ export default function PlatformPanel() {
             </> : <p className="panel-intro wide">Create the engine, then select it below to push normalized records using the ingestion form.</p>}
           </div>
 
+          {sourceType === "sqlserver" && sourceCatalog && selectedSourceTable && <div className="platform-history">
+            <div className="settings-section-title"><div><h3>Discovered table relationships</h3><p>Declared foreign keys only. These identify possible joins; no joins are executed automatically.</p></div></div>
+            {(sourceCatalog.relationships || [])
+              .filter((relationship) =>
+                (relationship.from_schema === schema && relationship.from_table === table) ||
+                (relationship.to_schema === schema && relationship.to_table === table)
+              )
+              .map((relationship) => <article className="platform-history-item" key={relationship.constraint_name + relationship.from_schema + relationship.from_table}>
+                <strong>{relationship.from_schema}.{relationship.from_table} → {relationship.to_schema}.{relationship.to_table}</strong>
+                <span>{relationship.columns.map((column) => column.from_column + " = " + column.to_column).join(", ")}</span>
+                <small>{relationship.constraint_name}</small>
+              </article>)}
+            {(sourceCatalog.relationships || []).filter((relationship) =>
+              (relationship.from_schema === schema && relationship.from_table === table) ||
+              (relationship.to_schema === schema && relationship.to_table === table)
+            ).length === 0 && <p className="panel-intro">No declared foreign-key relationships were found for this table or view.</p>}
+          </div>}
           {sourceType === "sqlserver" && <div className="platform-source-filters">
             <div className="settings-section-title"><div><h3>Source filters</h3><p>Optional safe filters applied while reading the configured table. Do not use this to bypass record permissions.</p></div><button type="button" className="secondary-button" onClick={addSourceFilter}>Add filter</button></div>
             {sourceFilters.map((filter, index) => <div className="platform-filter-row" key={index}>
@@ -483,7 +544,24 @@ export default function PlatformPanel() {
             </div>)}
           </div>}
 
-          <div className="settings-section-title"><div><h3>Field mapping and weights</h3><p>Map source columns into standard searchable fields. Higher weights make a field contribute more to lexical relevance.</p></div><button type="button" className="secondary-button" onClick={addField}>Add field</button></div>
+          <div className="settings-section-title">
+            <div><h3>Field mapping and weights</h3><p>Map source columns into standard searchable fields. Automatic suggestions use metadata only; review them before saving.</p></div>
+            <div className="settings-actions">
+              {sourceType === "sqlserver" && <button type="button" className="secondary-button" onClick={() => void applyMappingSuggestions()} disabled={!sourceCatalog || !table || suggestingMapping}>
+                {suggestingMapping ? "Suggesting…" : "Auto-suggest mappings"}
+              </button>}
+              <button type="button" className="secondary-button" onClick={addField}>Add field</button>
+            </div>
+          </div>
+          {mappingSuggestions && <div className="mini-panel">
+            <div>
+              <strong>Mapping suggestion review</strong>
+              <p>Suggested ID: {mappingSuggestions.id_column_suggestion.column || "Manual selection required"} · {mappingSuggestions.id_column_suggestion.reason}</p>
+              {mappingSuggestions.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+              {mappingSuggestions.skipped_columns.length > 0 && <small>Excluded from automatic mapping: {mappingSuggestions.skipped_columns.map((column) => column.column).join(", ")}</small>}
+              {mappingSuggestions.potential_filter_columns.length > 0 && <small>Possible status/filter columns (not applied): {mappingSuggestions.potential_filter_columns.join(", ")}</small>}
+            </div>
+          </div>}
           <div className="platform-fields">
             {fields.map((field, index) => <div className="platform-field-row" key={index}>
               <label className="setting-field"><span>Field key</span><input value={field.key} onChange={(e) => updateField(index, { key: e.target.value })} required /></label>
