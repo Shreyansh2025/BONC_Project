@@ -223,6 +223,53 @@ export interface PlatformCategoryConfig {
   public_search_enabled: boolean;
 }
 
+export interface PlatformSourceProfile {
+  profile_id: string;
+  connection_env: string;
+}
+
+export interface PlatformSourceColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+}
+
+export interface PlatformSourceTable {
+  schema: string;
+  name: string;
+  type: "BASE TABLE" | "VIEW" | string;
+  columns: PlatformSourceColumn[];
+}
+
+export interface PlatformSourceCatalog {
+  profile_id: string;
+  database: string;
+  schemas: string[];
+  tables: PlatformSourceTable[];
+}
+
+export async function getPlatformSourceProfiles(): Promise<PlatformSourceProfile[]> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/sources`, {
+    headers: { Accept: "application/json" },
+  });
+  const payload = await readJson<{ items: PlatformSourceProfile[] }>(response);
+  return payload.items || [];
+}
+
+export async function discoverPlatformSourceSchema(input: {
+  profileId: string;
+  schema?: string;
+}): Promise<PlatformSourceCatalog> {
+  const params = new URLSearchParams();
+  if (input.schema) params.set("schema", input.schema);
+  const query = params.size ? `?${params.toString()}` : "";
+  const response = await fetch(
+    `${SEARCH_API_BASE}/api/admin/platform/sources/${encodeURIComponent(input.profileId)}/schema${query}`,
+    { headers: { Accept: "application/json" } },
+  );
+  return readJson<PlatformSourceCatalog>(response);
+}
+
 export interface PlatformCategoryRecord {
   config: PlatformCategoryConfig;
   status: "active" | "disabled" | string;
