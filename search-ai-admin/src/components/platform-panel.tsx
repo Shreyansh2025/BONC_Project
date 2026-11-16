@@ -5,6 +5,7 @@ import {
   discoverPlatformSourceSchema,
   suggestPlatformSourceMapping,
   previewPlatformJoinView,
+  validatePlatformSource,
   getPlatformSourceProfiles,
   getPlatformCategories,
   getPlatformCategoryHistory,
@@ -27,6 +28,7 @@ import {
   type PlatformSourceMappingSuggestions,
   type PlatformSourceRelationship,
   type PlatformJoinViewPreview,
+  type PlatformSourceValidation,
 } from "../lib/search-api";
 
 const ROLE_OPTIONS: PlatformFieldRole[] = ["title", "skill", "location", "category", "description", "general"];
@@ -87,6 +89,8 @@ export default function PlatformPanel() {
   const [viewName, setViewName] = useState("vw_Search_People");
   const [viewPreview, setViewPreview] = useState<PlatformJoinViewPreview | null>(null);
   const [previewingView, setPreviewingView] = useState(false);
+  const [validatingSource, setValidatingSource] = useState(false);
+  const [sourceValidation, setSourceValidation] = useState<PlatformSourceValidation | null>(null);
   const [schema, setSchema] = useState("dbo");
   const [table, setTable] = useState("Users");
   const [idColumn, setIdColumn] = useState("UserId");
@@ -257,6 +261,7 @@ export default function PlatformPanel() {
   const addSourceFilter = () => {
     // Never assume the source's soft-delete convention. Require the admin
     // to select a column and explicitly choose its intended filter.
+    setSourceValidation(null);
     setSourceFilters((current) => [
       ...current,
       { column: "", operator: "is_null", values: [] },
@@ -264,6 +269,7 @@ export default function PlatformPanel() {
   };
 
   const updateSourceFilter = (index: number, patch: Partial<PlatformSourceFilter>) => {
+    setSourceValidation(null);
     setSourceFilters((current) => current.map((filter, i) => i === index ? { ...filter, ...patch } : filter));
   };
 
@@ -274,6 +280,10 @@ export default function PlatformPanel() {
     setDescription(config.description || "");
     setSourceType(config.source.type);
     setSourceCatalog(null);
+    setMappingSuggestions(null);
+    setSourceValidation(null);
+    setSelectedJoinRelationships([]);
+    setViewPreview(null);
     if (config.source.type === "sqlserver") {
       setConnectionEnv(config.source.connection_env);
       setSchema(config.source.schema);
@@ -316,6 +326,7 @@ export default function PlatformPanel() {
       setMappingSuggestions(null);
       setSelectedJoinRelationships([]);
       setViewPreview(null);
+      setSourceValidation(null);
 
       const nextSchema = catalog.schemas.includes(schema) ? schema : (catalog.schemas[0] || "dbo");
       setViewSchema(nextSchema);
@@ -341,6 +352,7 @@ export default function PlatformPanel() {
       );
     } catch (e) {
       setSourceCatalog(null);
+      setSourceValidation(null);
       setError(getError(e, "Unable to inspect the configured SQL source."));
     } finally {
       setDiscoveringSource(false);
@@ -354,6 +366,34 @@ export default function PlatformPanel() {
     relationship.to_schema,
     relationship.to_table,
   ].join("|");
+
+  const validateSource = async () => {
+    if (!sourceProfileId || !schema || !table || !idColumn) return;
+    setValidatingSource(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await validatePlatformSource({
+        profileId: sourceProfileId,
+        schema,
+        table,
+        idColumn,
+        filters: sourceFilters,
+        maxRecords,
+      });
+      setSourceValidation(result);
+      setNotice(
+        result.is_valid
+          ? "Source validation passed. Document IDs are non-null and unique."
+          : "Source validation found issues. Review the counts and warnings before syncing."
+      );
+    } catch (e) {
+      setSourceValidation(null);
+      setError(getError(e, "Unable to validate the selected document ID."));
+    } finally {
+      setValidatingSource(false);
+    }
+  };
 
   const previewJoinView = async () => {
     if (!sourceProfileId || !sourceCatalog || !idColumn) return;
@@ -397,6 +437,7 @@ export default function PlatformPanel() {
         schema,
         table,
       });
+      setSourceValidation(null);
       const safeFields: PlatformFieldConfig[] = result.fields.map((field) => ({
         key: field.key,
         source_column: field.source_column,
@@ -577,6 +618,7 @@ export default function PlatformPanel() {
                 <select value={sourceProfileId} onChange={(e) => {
                   setConnectionEnv(e.target.value ? "SEARCH_SOURCE_" + e.target.value : "");
                   setSourceCatalog(null);
+                  setSourceValidation(null);
                   setMappingSuggestions(null);
                   setSelectedJoinRelationships([]);
                   setViewPreview(null);
@@ -604,6 +646,7 @@ export default function PlatformPanel() {
                     setMappingSuggestions(null);
                     setSelectedJoinRelationships([]);
                     setViewPreview(null);
+                    setSourceValidation(null);
                     setIdColumn(nextTable?.primary_key_columns?.length === 1
                       ? nextTable.primary_key_columns[0]
                       : (nextTable?.columns.find((column) => /id$/i.test(column.name))?.name || ""));
@@ -616,7 +659,10 @@ export default function PlatformPanel() {
                   </select>
                 : <input value={table} onChange={(e) => setTable(e.target.value)} required />}</label>
               <label className="setting-field"><span>Unique ID column</span>{sourceCatalog
-                ? <select value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required>
+                ? <select value={idColumn} onChange={(e) => {
+                    setIdColumn(e.target.value);
+                    setSourceValidation(null);
+                  }} required>
                     <option value="">Select unique ID column</option>
                     {sourceColumns.map((column) => <option key={column.name} value={column.name}>
                       {column.name} · {column.data_type}
@@ -625,7 +671,32 @@ export default function PlatformPanel() {
                     </option>)}
                   </select>
                 : <input value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required />}</label>
-              <label className="setting-field"><span>Maximum records per sync</span><input type="number" min="1" max="100000" value={maxRecords} onChange={(e) => setMaxRecords(Number(e.target.value))} /></label>
+              <label className="setting-field"><span>Maximum records per sync</span><input type="number" min="1" max="100000" value={maxRecords} onChange={(e) => {
+                setMaxRecords(Number(e.target.value));
+                setSourceValidation(null);
+              }} /></label>
+              <div className="setting-field wide">
+                <span>Source preflight</span>
+                <button type="button" className="secondary-button" onClick={() => void validateSource()} disabled={!sourceCatalog || !table || !idColumn || validatingSource}>
+                  {validatingSource ? "Validating source…" : "Validate ID uniqueness & filters"}
+                </button>
+                <small>Checks row count, NULL IDs and duplicate IDs using the selected filters. It does not read or return source records.</small>
+              </div>
+              {sourceValidation && <div className="mini-panel wide">
+                <div>
+                  <strong>{sourceValidation.is_valid ? "Document ID validation passed" : "Document ID validation needs attention"}</strong>
+                  <p>
+                    {sourceValidation.total_rows.toLocaleString()} rows ·
+                    {" " + sourceValidation.non_null_ids.toLocaleString()} non-null IDs ·
+                    {" " + sourceValidation.distinct_ids.toLocaleString()} distinct IDs
+                  </p>
+                  <p>
+                    {sourceValidation.null_id_count.toLocaleString()} NULL IDs ·
+                    {" " + sourceValidation.duplicate_id_count.toLocaleString()} duplicate IDs
+                  </p>
+                  {sourceValidation.warnings.map((warning) => <small key={warning}>{warning}</small>)}
+                </div>
+              </div>}
             </> : <p className="panel-intro wide">Create the engine, then select it below to push normalized records using the ingestion form.</p>}
           </div>
 
