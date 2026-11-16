@@ -102,6 +102,10 @@ class SearchPlatformModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             PlatformSearchRequest.model_validate({"query": "Shreyansh OCR expert"})
 
+    def test_platform_search_request_rejects_whitespace_only_query(self):
+        with self.assertRaises(ValidationError):
+            PlatformSearchRequest.model_validate({"query": "   ", "category": "people"})
+
 
 
     def test_query_plan_removes_field_alias_but_keeps_exact_values(self):
