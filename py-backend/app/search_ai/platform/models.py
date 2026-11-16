@@ -177,7 +177,7 @@ class SearchFeedbackRequest(StrictModel):
     is_relevant: bool
     comment: str | None = Field(default=None, max_length=1000)
     result_rank: int | None = Field(default=None, ge=1, le=100)
-    result_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    result_score: float | None = Field(default=None, ge=0.0, le=100.0, allow_inf_nan=False)
     config_version: int | None = Field(default=None, ge=1)
     index_version: int | None = Field(default=None, ge=0)
 
