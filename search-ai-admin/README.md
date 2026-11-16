@@ -73,11 +73,13 @@ The **Search engines** workspace is a new configuration-driven platform running 
 
 1. Confirm Search AI is connected to the staging SQL Server database.
 2. Run `py-backend/sql/migrations/004_create_generic_search_platform.sql` against **RN_BoncNetwork_Staging only**. The migration contains a database-name safety check and creates:
-   - `searchai.SearchCategories` — category configuration and versions.
+   - `searchai.SearchCategories` — search-engine configuration and versions.
    - `searchai.SearchCategoryHistory` — immutable configuration snapshots.
-   - `searchai.SearchDocuments` — normalized records ingested for each category.
+   - `searchai.SearchFeedback` — admin-labelled relevance examples.
+   - `searchai.SearchDocuments` — normalized records ingested for each engine.
+3. Run `py-backend/sql/migrations/005_add_search_feedback_ranking_context.sql` against **RN_BoncNetwork_Staging only**, after migration 004. It adds the optional result rank, score, configuration version and index version fields to relevance feedback.
 
-Do not run this staging migration against production. A production migration must be reviewed and prepared separately.
+Both migrations contain database-name safety checks. Do not run either staging migration against production. A production migration must be reviewed and prepared separately.
 
 ### Data source setup
 
