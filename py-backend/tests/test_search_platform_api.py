@@ -185,6 +185,7 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
             "non_null_ids": 25,
             "distinct_ids": 25,
             "null_id_count": 0,
+            "blank_id_count": 0,
             "duplicate_id_count": 0,
             "max_records": 50000,
             "is_valid": True,
