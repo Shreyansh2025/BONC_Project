@@ -115,8 +115,10 @@ class CategoryRules(StrictModel):
     def at_least_one_search_method(self) -> "CategoryRules":
         if not self.lexical_enabled and not self.semantic_enabled:
             raise ValueError("At least one of lexical_enabled or semantic_enabled must be true")
-        if self.lexical_weight + self.semantic_weight <= 0:
-            raise ValueError("At least one ranking weight must be greater than zero")
+        if self.lexical_enabled and self.lexical_weight <= 0:
+            raise ValueError("Enabled lexical search requires a lexical_weight greater than zero")
+        if self.semantic_enabled and self.semantic_weight <= 0:
+            raise ValueError("Enabled semantic search requires a semantic_weight greater than zero")
         return self
 
 
