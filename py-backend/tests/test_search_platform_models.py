@@ -621,7 +621,7 @@ class SearchPlatformModelTests(unittest.TestCase):
         skipped_columns = {item["column"] for item in result["skipped_columns"]}
         self.assertTrue({"PersonGuid", "CompanyId", "PANNumber", "SSN", "Gender"}.issubset(skipped_columns))
 
-    def test_source_discovery_uses_referenced_key_ordinals_for_composite_foreign_keys(self):
+    def test_source_discovery_uses_native_sql_server_foreign_key_column_ids(self):
         connection = MagicMock()
         connection.__enter__.return_value = connection
         database_result = MagicMock()
@@ -645,9 +645,10 @@ class SearchPlatformModelTests(unittest.TestCase):
 
         foreign_key_query = connection.execute.call_args_list[3].args[0]
         self.assertIn(
-            "fk.POSITION_IN_UNIQUE_CONSTRAINT = referenced.ORDINAL_POSITION",
+            "fkc.referenced_column_id = referenced_column.column_id",
             foreign_key_query.text,
         )
+        self.assertIn("fkc.parent_column_id = parent_column.column_id", foreign_key_query.text)
         self.assertEqual(catalog["relationships"], [])
 
     def test_join_view_preview_generates_many_to_one_left_join_only(self):
