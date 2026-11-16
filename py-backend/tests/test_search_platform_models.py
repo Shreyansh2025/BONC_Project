@@ -21,6 +21,7 @@ from app.search_ai.services.source_sync import (
     build_source_mapping_suggestions,
     generate_join_view_preview,
     validate_sqlserver_source,
+    sync_sqlserver_category,
 )
 
 
@@ -472,6 +473,31 @@ class SearchPlatformModelTests(unittest.TestCase):
             },
         }
         self.assertGreater(_phrase_score("machine learning", config, document), 0)
+
+    def test_source_sync_refuses_blank_or_null_document_ids(self):
+        config = CategoryConfig.model_validate(people_config())
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        engine = MagicMock()
+        engine.connect.return_value = connection
+
+        for invalid_id in (None, "", "   "):
+            connection.execute.return_value.mappings.return_value.all.return_value = [
+                {
+                    "_document_id": invalid_id,
+                    "name": "Person",
+                    "skills": "Python",
+                    "bio": "Developer",
+                    "location": "Indore",
+                }
+            ]
+            with (
+                patch("app.search_ai.services.source_sync._source_engine", return_value=engine),
+                patch("app.search_ai.services.source_sync.replace_documents") as replace_mock,
+                self.assertRaisesRegex(ValueError, "NULL or blank document ID"),
+            ):
+                sync_sqlserver_category(config, updated_by="test")
+            replace_mock.assert_not_called()
 
     def test_source_preflight_detects_null_and_duplicate_document_ids(self):
         catalog = {
