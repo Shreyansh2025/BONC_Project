@@ -59,6 +59,54 @@ def _without_phrases(query: str, phrases: set[str]) -> str:
     return " ".join(result.split())
 
 
+def _expand_synonym_groups(
+    query: str,
+    groups: list[Any],
+    protected_phrases: set[str],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Expand category-local synonyms without rewriting exact indexed values."""
+    normalised_query = normalise_query(query)
+    additions: list[str] = []
+    expansions: list[dict[str, Any]] = []
+    seen_additions: set[str] = set(normalised_query.split())
+
+    for group in groups:
+        terms = [
+            normalise_query(term)
+            for term in getattr(group, "terms", [])
+        ]
+        terms = [term for term in terms if len(term.replace(" ", "")) >= 2]
+        matched = [
+            term for term in terms
+            if contains_phrase(normalised_query, term) and term not in protected_phrases
+        ]
+        if not matched:
+            continue
+
+        # Prefer the most specific phrase when synonym groups overlap.
+        matched_term = sorted(matched, key=lambda item: (-len(item), item))[0]
+        alternatives = [
+            term for term in terms
+            if term != matched_term
+            and term not in protected_phrases
+            and not contains_phrase(normalised_query, term)
+            and term not in seen_additions
+        ]
+        if not alternatives:
+            continue
+
+        expansions.append({
+            "matched_term": matched_term,
+            "alternatives": alternatives,
+        })
+        for alternative in alternatives:
+            additions.extend(alternative.split())
+            seen_additions.add(alternative)
+
+    expanded_query = " ".join([query, *additions]).strip()
+    return expanded_query, expansions
+
+
 def interpret_query(
     query: str,
     config: CategoryConfig,
@@ -78,6 +126,7 @@ def interpret_query(
     matched_fields: dict[str, list[str]] = {}
     alias_phrases: set[str] = set()
     recognised_phrases: set[str] = set()
+    matched_value_phrases: set[str] = set()
 
     for field in config.fields:
         if not field.searchable:
@@ -115,6 +164,7 @@ def interpret_query(
             if len(normalised_value.replace(" ", "")) >= min_value_length and contains_phrase(normalised, normalised_value):
                 values.add(value_text)
                 recognised_phrases.add(normalised_value)
+                matched_value_phrases.add(normalised_value)
 
         if aliases:
             matched_aliases[field.key] = sorted(aliases)
@@ -145,6 +195,12 @@ def interpret_query(
                 "applied_as": "ranking_hint_only",
             })
 
+    expanded_lexical_query, synonym_expansions = _expand_synonym_groups(
+        lexical_query,
+        config.synonyms,
+        matched_value_phrases,
+    )
+
     return {
         "normalised_query": normalised,
         "query_type": "field_guided" if matched_aliases or matched_values else "free_text",
@@ -154,6 +210,8 @@ def interpret_query(
         "matched_fields": matched_fields,
         "constraints": constraints,
         "lexical_query": lexical_query,
+        "expanded_lexical_query": expanded_lexical_query,
+        "synonym_expansions": synonym_expansions,
         "unmatched_tokens": unmatched_tokens,
         "explanation": (
             "Recognised field aliases and exact values from this engine's indexed data. "
