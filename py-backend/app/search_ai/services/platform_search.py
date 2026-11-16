@@ -177,9 +177,8 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
     document_id_lookup: dict[str, set[int]] = {}
     for position, document in enumerate(documents):
         raw_id = str(document.get("document_id") or "").strip()
-        normalized_id = raw_id.casefold()
-        if normalized_id:
-            document_id_lookup.setdefault(normalized_id, set()).add(position)
+        if raw_id:
+            document_id_lookup.setdefault(raw_id, set()).add(position)
 
     built = CategoryIndex(
         version=version,
@@ -331,9 +330,10 @@ def search_category(
     # names, locations and skills are retained as entered; each engine's
     # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
-    # IDs are case-insensitive but otherwise exact. Do not strip punctuation
-    # or tokenize them: "AB-12" and "AB12" may be distinct identifiers.
-    exact_identifier_positions = index.document_id_lookup.get(query.strip().casefold(), set())
+    # IDs are matched literally after trimming outer whitespace. Do not
+    # case-fold, strip punctuation or tokenize them: "AB-12", "AB12",
+    # "abc" and "ABC" may be distinct identifiers.
+    exact_identifier_positions = index.document_id_lookup.get(query.strip(), set())
     synonym_expansions = understanding.get("synonym_expansions", [])
     expansion_terms = [
         term
