@@ -33,6 +33,14 @@ def _normalise(value: Any) -> str:
     return " ".join(_TOKEN_RE.findall(str(value or "").lower()))
 
 
+def _contains_phrase(normal_query: str, phrase: str) -> bool:
+    phrase = _normalise(phrase)
+    if not normal_query or not phrase:
+        return False
+    pattern = r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])"
+    return re.search(pattern, normal_query) is not None
+
+
 def _field_text(config: CategoryConfig, document: dict[str, Any], *, semantic_only: bool = False) -> str:
     parts: list[str] = []
     values = document.get("fields", {})
@@ -99,7 +107,7 @@ def _query_understanding(query: str, config: CategoryConfig, documents: list[dic
         recognised: set[str] = set()
         for alias in field.aliases:
             alias_text = _normalise(alias)
-            if alias_text and alias_text in normal_query:
+            if alias_text and _contains_phrase(normal_query, alias_text):
                 recognised.add(alias)
         for doc in documents:
             raw = doc.get("fields", {}).get(field.key)
@@ -107,7 +115,7 @@ def _query_understanding(query: str, config: CategoryConfig, documents: list[dic
                 continue
             for value in str(raw).split(","):
                 candidate = _normalise(value)
-                if len(candidate) >= 2 and candidate in normal_query:
+                if len(candidate) >= 2 and _contains_phrase(normal_query, candidate):
                     recognised.add(str(value).strip())
         if recognised:
             field_hints[field.key] = sorted(recognised)
