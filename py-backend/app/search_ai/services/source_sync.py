@@ -328,11 +328,17 @@ def build_source_mapping_suggestions(
     columns = selected.get("columns", [])
     primary_keys = list(selected.get("primary_key_columns") or [])
     primary_key_suggestion = None
-    if len(primary_keys) == 1:
+    if len(primary_keys) == 1 and _IDENTIFIER.fullmatch(primary_keys[0]):
         primary_key_suggestion = {
             "column": primary_keys[0],
             "confidence": "high",
             "reason": "Declared single-column primary key",
+        }
+    elif len(primary_keys) == 1:
+        primary_key_suggestion = {
+            "column": None,
+            "confidence": "none",
+            "reason": "The primary-key column name is outside the supported safe-identifier format; create a view with a simple alias",
         }
     elif len(primary_keys) > 1:
         primary_key_suggestion = {
@@ -345,7 +351,8 @@ def build_source_mapping_suggestions(
         id_candidates = [
             str(column["name"])
             for column in columns
-            if _normalise_column_name(str(column["name"])) in {
+            if _IDENTIFIER.fullmatch(str(column["name"]))
+            and _normalise_column_name(str(column["name"])) in {
                 "id", "userid", "userrowid", "useruniqueid", "articleid",
                 "productid", "companyid", "documentid",
             }
@@ -371,6 +378,12 @@ def build_source_mapping_suggestions(
     title_candidates: list[dict[str, Any]] = []
     for column in available_columns:
         name = str(column["name"])
+        if not _IDENTIFIER.fullmatch(name):
+            skipped.append({
+                "column": name,
+                "reason": "Column name is outside the supported safe-identifier format; create a view with a simple alias",
+            })
+            continue
         # Generated join views prefix columns with their source table. Infer
         # the logical name from the original leaf column.
         normalized_name = _normalise_column_name(name.split("__")[-1])
