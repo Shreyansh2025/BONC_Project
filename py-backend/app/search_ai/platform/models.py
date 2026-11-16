@@ -49,6 +49,31 @@ class SearchFieldConfig(StrictModel):
         return [item.strip().lower() for item in values if item.strip()]
 
 
+class SQLSourceFilter(StrictModel):
+    column: str = Field(min_length=1, max_length=128)
+    operator: Literal["eq", "ne", "in", "is_null", "not_null"]
+    value: str | int | float | bool | None = None
+    values: list[str | int | float | bool] = Field(default_factory=list, max_length=50)
+
+    @field_validator("column")
+    @classmethod
+    def validate_column(cls, value: str) -> str:
+        value = value.strip()
+        if not _IDENTIFIER_RE.fullmatch(value):
+            raise ValueError("Filter column must be a simple SQL identifier")
+        return value
+
+    @model_validator(mode="after")
+    def validate_filter_value(self) -> "SQLSourceFilter":
+        if self.operator in {"eq", "ne"} and self.value is None:
+            raise ValueError("eq/ne filters require a value")
+        if self.operator == "in" and not self.values:
+            raise ValueError("in filters require at least one value")
+        if self.operator in {"is_null", "not_null"} and (self.value is not None or self.values):
+            raise ValueError("null filters do not accept values")
+        return self
+
+
 class SQLServerSourceConfig(StrictModel):
     type: Literal["sqlserver"] = "sqlserver"
     # The actual credential stays on the server. The admin stores only the
@@ -57,6 +82,8 @@ class SQLServerSourceConfig(StrictModel):
     schema: str = Field(default="dbo", min_length=1, max_length=128)
     table: str = Field(min_length=1, max_length=128)
     id_column: str = Field(min_length=1, max_length=128)
+    filters: list[SQLSourceFilter] = Field(default_factory=list, max_length=20)
+    max_records: int = Field(default=50000, ge=1, le=100000)
 
     @field_validator("schema", "table", "id_column")
     @classmethod
