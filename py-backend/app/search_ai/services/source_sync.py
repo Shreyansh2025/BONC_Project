@@ -85,4 +85,4 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
 
     if not documents:
         raise ValueError("Source query returned no records; refusing to replace the existing index")
-    return replace_documents(config.category_id, documents, updated_by=updated_by)
+    return replace_documents(config.category_id, documents, updated_by=updated_by, replace_all=True)
