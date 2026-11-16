@@ -89,6 +89,9 @@ def _build_weighted_semantic_vectors(
         expected_shape = (chunk_end - chunk_start, EMBEDDING_DIM)
         if model_vectors.ndim != 2 or model_vectors.shape != expected_shape:
             raise ValueError("Embedding model returned an unexpected vector shape")
+        # Normalize each field vector before applying its configured weight;
+        # otherwise raw embedding magnitude can distort the intended weights.
+        faiss.normalize_L2(model_vectors)
 
         for offset, vector in enumerate(model_vectors):
             row_index = pending_rows[chunk_start + offset]
