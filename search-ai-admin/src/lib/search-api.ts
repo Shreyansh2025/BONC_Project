@@ -359,3 +359,48 @@ export async function getPlatformCategoryHistory(categoryId: string): Promise<Pl
   const payload = await readJson<{ items: PlatformCategoryHistoryItem[] }>(response);
   return payload.items || [];
 }
+
+
+export interface PlatformFeedbackItem {
+  feedback_id: number;
+  query: string;
+  document_id: string;
+  is_relevant: boolean;
+  comment?: string | null;
+  created_at_utc?: string | null;
+  created_by?: string | null;
+}
+
+export interface PlatformFeedbackSummary {
+  total_count: number;
+  relevant_count: number;
+  not_relevant_count: number;
+  items: PlatformFeedbackItem[];
+}
+
+export async function recordPlatformFeedback(input: {
+  categoryId: string;
+  query: string;
+  documentId: string;
+  isRelevant: boolean;
+  comment?: string;
+}): Promise<{ feedback_id: number; category_id: string; document_id: string; is_relevant: boolean }> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(input.categoryId)}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      query: input.query,
+      document_id: input.documentId,
+      is_relevant: input.isRelevant,
+      comment: input.comment?.trim() || null,
+    }),
+  });
+  return readJson(response);
+}
+
+export async function getPlatformFeedback(categoryId: string, limit = 100): Promise<PlatformFeedbackSummary> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(categoryId)}/feedback?limit=${limit}`, {
+    headers: { Accept: "application/json" },
+  });
+  return readJson<PlatformFeedbackSummary>(response);
+}
