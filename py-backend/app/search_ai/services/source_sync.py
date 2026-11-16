@@ -248,6 +248,18 @@ def _normalise_column_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+def _is_sensitive_column_name(value: str) -> bool:
+    logical_name = value.split("__")[-1]
+    normalized_name = _normalise_column_name(logical_name)
+    return normalized_name in _SENSITIVE_COLUMN_NAMES or any(
+        normalized_name.endswith(sensitive) for sensitive in (
+            "password", "token", "secret", "hash", "salt", "aadhaar",
+            "aadhar", "passport", "phonenumber", "mobilenumber",
+            "email", "emailid", "mobile", "mobileno", "phone",
+        )
+    )
+
+
 def _field_key_from_column(column_name: str, used_keys: set[str]) -> str:
     snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", column_name).lower()
     key = re.sub(r"[^a-z0-9_]", "_", snake).strip("_") or "field"
@@ -332,16 +344,9 @@ def build_source_mapping_suggestions(
     for column in available_columns:
         name = str(column["name"])
         # Generated join views prefix columns with their source table. Infer
-        # their semantic role from the original leaf column name.
-        logical_name = name.split("__")[-1]
-        normalized_name = _normalise_column_name(logical_name)
-        if normalized_name in _SENSITIVE_COLUMN_NAMES or any(
-            normalized_name.endswith(sensitive) for sensitive in (
-                "password", "token", "secret", "hash", "salt", "aadhaar",
-                "aadhar", "passport", "phonenumber", "mobilenumber",
-                "email", "emailid", "mobile", "mobileno", "phone",
-            )
-        ):
+        # the logical name from the original leaf column.
+        normalized_name = _normalise_column_name(name.split("__")[-1])
+        if _is_sensitive_column_name(name):
             skipped.append({"column": name, "reason": "Sensitive or contact field excluded from automatic mapping"})
             continue
         if normalized_name in {"id", "userid", "userrowid", "useruniqueid", "articleid", "productid", "companyid", "documentid"}:
@@ -586,6 +591,10 @@ def generate_join_view_preview(
             column_name = str(column["name"])
             if table_key == base_key and column_name == base_id_column:
                 continue
+            if str(column.get("data_type", "")).lower() not in _SEARCHABLE_TYPES:
+                continue
+            if _is_sensitive_column_name(column_name):
+                continue
             alias_name = output_name(table_key, column_name)
             select_items.append(
                 f"{_quote_identifier(aliases[table_key])}.{_quote_identifier(column_name)} "
@@ -633,6 +642,7 @@ def generate_join_view_preview(
         "warnings": [
             "This endpoint only generates SQL; it does not execute or create the view.",
             "The generated joins follow child-to-parent foreign keys so the base record remains the document grain.",
+            "Sensitive/contact columns and unsupported data types are excluded from the default projection.",
             "Review the selected columns and permissions, then execute the script manually in the development database.",
         ],
     }
