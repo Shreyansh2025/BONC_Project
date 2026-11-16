@@ -3,12 +3,14 @@ import type { FormEvent } from "react";
 import {
   createPlatformCategory,
   getPlatformCategories,
+  getPlatformCategoryHistory,
   ingestPlatformDocuments,
   runPlatformAdminSearch,
   syncPlatformCategory,
   updatePlatformCategory,
   type PlatformCategoryConfig,
   type PlatformCategoryRecord,
+  type PlatformCategoryHistoryItem,
   type PlatformFieldConfig,
   type PlatformFieldRole,
   type PlatformSearchResponse,
@@ -73,6 +75,8 @@ export default function PlatformPanel() {
   const [rawDocuments, setRawDocuments] = useState('[\n  {\n    "document_id": "person-1",\n    "title": "Shreyansh",\n    "fields": { "name": "Shreyansh", "skills": "OCR, Python", "bio": "Document processing developer", "location": "Indore" }\n  }\n]');
   const [query, setQuery] = useState("Shreyansh OCR expert in Indore");
   const [searchResult, setSearchResult] = useState<PlatformSearchResponse | null>(null);
+  const [categoryHistory, setCategoryHistory] = useState<PlatformCategoryHistoryItem[]>([]);
+  const [changeReason, setChangeReason] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -96,6 +100,14 @@ export default function PlatformPanel() {
     () => categories.find((item) => item.config.category_id === selectedCategory) ?? null,
     [categories, selectedCategory],
   );
+
+  const loadHistory = async (id: string) => {
+    try {
+      setCategoryHistory(await getPlatformCategoryHistory(id));
+    } catch {
+      setCategoryHistory([]);
+    }
+  };
 
   const updateField = (index: number, patch: Partial<PlatformFieldConfig>) => {
     setFields((current) => current.map((field, i) => i === index ? { ...field, ...patch } : field));
@@ -142,6 +154,7 @@ export default function PlatformPanel() {
     setPublicEnabled(config.public_search_enabled);
     setEditingVersion(item.config_version);
     setSelectedCategory(config.category_id);
+    void loadHistory(config.category_id);
     setSearchResult(null);
     setNotice("Editing " + config.display_name + ". Save changes to create a new configuration version.");
     setError("");
@@ -187,12 +200,15 @@ export default function PlatformPanel() {
             categoryId: config.category_id,
             expectedVersion: editingVersion,
             config,
+            changeReason,
           });
       setNotice(editingVersion === null
         ? "Category created. Next, sync the SQL source or ingest documents."
         : "Category configuration updated. Re-sync or re-ingest data to rebuild the index.");
       setEditingVersion(null);
+      setChangeReason("");
       setSelectedCategory(saved.config.category_id);
+      await loadHistory(saved.config.category_id);
       await refresh();
     } catch (e) {
       setError(getError(e, "Unable to create category."));
@@ -269,7 +285,7 @@ export default function PlatformPanel() {
                 <small>{item.config.fields.length} mapped fields · {item.config.public_search_enabled ? "public search enabled" : "admin-only"}</small>
               </div>
               <div className="platform-category-actions">
-                <button type="button" className="secondary-button" onClick={() => setSelectedCategory(item.config.category_id)}>Test</button>
+                <button type="button" className="secondary-button" onClick={() => { setSelectedCategory(item.config.category_id); void loadHistory(item.config.category_id); }}>Test</button>
                 <button type="button" className="secondary-button" onClick={() => loadCategoryForEdit(item)}>Edit</button>
                 {item.config.source.type === "sqlserver" && <button type="button" className="secondary-button" disabled={syncing === item.config.category_id} onClick={() => void syncCategory(item.config.category_id)}>{syncing === item.config.category_id ? "Syncing…" : "Sync source"}</button>}
               </div>
@@ -323,6 +339,7 @@ export default function PlatformPanel() {
             <label className="platform-checkbox"><input type="checkbox" checked={lexicalEnabled} onChange={(e) => setLexicalEnabled(e.target.checked)} /> Enable keyword matching</label>
             <label className="platform-checkbox"><input type="checkbox" checked={semanticEnabled} onChange={(e) => setSemanticEnabled(e.target.checked)} /> Enable semantic matching</label>
             <label className="platform-checkbox"><input type="checkbox" checked={publicEnabled} onChange={(e) => setPublicEnabled(e.target.checked)} /> Allow public search (only enable for approved non-sensitive data)</label>
+            <label className="setting-field wide"><span>Change reason</span><input value={changeReason} onChange={(e) => setChangeReason(e.target.value)} maxLength={1000} placeholder="Why are you creating or changing this category?" /></label>
           </div>
           <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create category" : "Save category changes"}</button>
             {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => setEditingVersion(null)}>Cancel edit</button>}</div>
@@ -345,6 +362,14 @@ export default function PlatformPanel() {
           </div>
           <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={!selectedCategory || searching}>{searching ? "Searching…" : "Test category search"}</button></div>
         </form>
+        {categoryHistory.length > 0 && <div className="platform-history">
+          <div className="settings-section-title"><div><h3>Configuration history</h3><p>Previous category configurations are kept as audit snapshots.</p></div></div>
+          {categoryHistory.map((item) => <article className="platform-history-item" key={item.history_id}>
+            <strong>v{item.config_version}</strong>
+            <span>{item.changed_by || "Unknown admin"} · {item.status}</span>
+            <small>{item.change_reason || "No reason supplied"}</small>
+          </article>)}
+        </div>}
         {searchResult && <div className="platform-results">
           <div className="platform-result-summary"><strong>{searchResult.total_count} results</strong><span>Index v{searchResult.index_version}</span></div>
           <div className="mini-panel"><div><strong>Query understanding (field hints)</strong><p>{pretty(searchResult.query_understanding)}</p></div></div>
