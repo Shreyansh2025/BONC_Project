@@ -72,15 +72,18 @@ _UPDATE_CATEGORY = text("""
 
 _INSERT_FEEDBACK = text("""
     INSERT INTO searchai.SearchFeedback
-        (CategoryId, QueryText, DocumentId, IsRelevant, Comment, CreatedBy)
+        (CategoryId, QueryText, DocumentId, IsRelevant, Comment, CreatedBy,
+         ResultRank, ResultScore, ConfigVersion, IndexVersion)
     OUTPUT INSERTED.FeedbackId
     VALUES
-        (:category_id, :query, :document_id, :is_relevant, :comment, :created_by)
+        (:category_id, :query, :document_id, :is_relevant, :comment, :created_by,
+         :result_rank, :result_score, :config_version, :index_version)
 """)
 
 _LIST_FEEDBACK = text("""
     SELECT TOP (:limit)
-        FeedbackId, QueryText, DocumentId, IsRelevant, Comment, CreatedAtUtc, CreatedBy
+        FeedbackId, QueryText, DocumentId, IsRelevant, Comment, CreatedAtUtc, CreatedBy,
+        ResultRank, ResultScore, ConfigVersion, IndexVersion
     FROM searchai.SearchFeedback
     WHERE CategoryId = :category_id
     ORDER BY CreatedAtUtc DESC, FeedbackId DESC
@@ -256,8 +259,12 @@ def record_feedback(
     is_relevant: bool,
     comment: str | None,
     created_by: str,
+    result_rank: int | None = None,
+    result_score: float | None = None,
+    config_version: int | None = None,
+    index_version: int | None = None,
 ) -> dict[str, Any]:
-    """Persist one admin-labelled relevance example for later model evaluation/training."""
+    """Persist a relevance label together with the ranking snapshot it came from."""
     with get_engine().begin() as connection:
         exists = connection.execute(
             text("""
@@ -276,6 +283,10 @@ def record_feedback(
             "is_relevant": bool(is_relevant),
             "comment": comment,
             "created_by": created_by,
+            "result_rank": result_rank,
+            "result_score": result_score,
+            "config_version": config_version,
+            "index_version": index_version,
         })
         feedback_id = int(result.scalar_one())
     return {
@@ -285,6 +296,10 @@ def record_feedback(
         "document_id": document_id,
         "is_relevant": bool(is_relevant),
         "comment": comment,
+        "result_rank": result_rank,
+        "result_score": result_score,
+        "config_version": config_version,
+        "index_version": index_version,
     }
 
 
@@ -312,6 +327,10 @@ def get_feedback(category_id: str, *, limit: int = 100) -> dict[str, Any]:
                 "comment": row["Comment"],
                 "created_at_utc": row["CreatedAtUtc"],
                 "created_by": row["CreatedBy"],
+                "result_rank": int(row["ResultRank"]) if row["ResultRank"] is not None else None,
+                "result_score": float(row["ResultScore"]) if row["ResultScore"] is not None else None,
+                "config_version": int(row["ConfigVersion"]) if row["ConfigVersion"] is not None else None,
+                "index_version": int(row["IndexVersion"]) if row["IndexVersion"] is not None else None,
             }
             for row in rows
         ],
