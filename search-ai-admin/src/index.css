@@ -315,3 +315,7 @@ h2 { font: 700 18px/1.3 Manrope, sans-serif; letter-spacing: -.025em; margin-bot
 .platform-history-item small { color: var(--muted); }
 @media (max-width: 900px) { .platform-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) { .platform-filter-row { grid-template-columns: 1fr; } }
+
+.platform-feedback-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.platform-feedback-counts span { padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: #536079; font-size: 10px; }
+.platform-feedback-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
