@@ -204,7 +204,8 @@ _SENSITIVE_COLUMN_NAMES = {
     "privatekey", "email", "emailid", "phonenumber", "mobilenumber",
     "mobile", "mobileno", "phone", "dateofbirth", "dob", "birthdate",
     "gender", "religion", "caste", "ethnicity", "maritalstatus",
-    "salary", "income", "disability",
+    "salary", "income", "disability", "homeaddress", "residentialaddress",
+    "mailingaddress", "streetaddress",
 }
 
 _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -258,8 +259,9 @@ def _is_sensitive_column_name(value: str) -> bool:
             "password", "token", "secret", "hash", "salt", "aadhaar",
             "aadhar", "passport", "passportnumber", "phonenumber", "mobilenumber",
             "email", "emailid", "mobile", "mobileno", "phone",
-            "pannumber", "panid", "socialsecuritynumber", "voterid",
-            "aadharnumber", "aadhaarnumber", "birthdate",
+            "pannumber", "panid", "ssn", "socialsecuritynumber", "voterid",
+            "aadharnumber", "aadhaarnumber", "birthdate", "homeaddress",
+            "residentialaddress", "mailingaddress", "streetaddress",
         )
     )
 
@@ -749,7 +751,8 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     query = text(
         f"SELECT TOP (:row_limit) {', '.join(selected)} "
-        f"FROM {qualified_table}{where_sql}"
+        f"FROM {qualified_table}{where_sql} "
+        "ORDER BY [_document_id]"
     )
 
     engine = _source_engine(source)
