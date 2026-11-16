@@ -564,7 +564,7 @@ def generate_join_view_preview(
     for index, (_, table_key) in enumerate(ordered_joins, start=1):
         aliases[table_key] = f"t{index}"
 
-    used_output_names = {"DocumentId"}
+    used_output_names = {"documentid"}
 
     def output_name(table_key: tuple[str, str], column_name: str) -> str:
         base_name = re.sub(
