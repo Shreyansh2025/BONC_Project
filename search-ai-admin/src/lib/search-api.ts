@@ -305,6 +305,22 @@ export interface PlatformJoinViewPreview {
   warnings: string[];
 }
 
+export interface PlatformSourceValidation {
+  profile_id: string;
+  database: string;
+  schema: string;
+  table: string;
+  id_column: string;
+  total_rows: number;
+  non_null_ids: number;
+  distinct_ids: number;
+  null_id_count: number;
+  duplicate_id_count: number;
+  max_records: number;
+  is_valid: boolean;
+  warnings: string[];
+}
+
 export async function getPlatformSourceProfiles(): Promise<PlatformSourceProfile[]> {
   const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/sources`, {
     headers: { Accept: "application/json" },
@@ -342,6 +358,31 @@ export async function suggestPlatformSourceMapping(input: {
     { headers: { Accept: "application/json" } },
   );
   return readJson<PlatformSourceMappingSuggestions>(response);
+}
+
+export async function validatePlatformSource(input: {
+  profileId: string;
+  schema: string;
+  table: string;
+  idColumn: string;
+  filters: PlatformSourceFilter[];
+  maxRecords: number;
+}): Promise<PlatformSourceValidation> {
+  const response = await fetch(
+    `${SEARCH_API_BASE}/api/admin/platform/sources/${encodeURIComponent(input.profileId)}/validate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        schema: input.schema,
+        table: input.table,
+        id_column: input.idColumn,
+        filters: input.filters,
+        max_records: input.maxRecords,
+      }),
+    },
+  );
+  return readJson<PlatformSourceValidation>(response);
 }
 
 export async function previewPlatformJoinView(input: {
