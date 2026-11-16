@@ -546,6 +546,8 @@ class SearchPlatformModelTests(unittest.TestCase):
                     "columns": [
                         {"name": "Id", "data_type": "int", "nullable": False},
                         {"name": "CompanyId", "data_type": "int", "nullable": True},
+                        {"name": "FirstName", "data_type": "nvarchar", "nullable": True},
+                        {"name": "LastName", "data_type": "nvarchar", "nullable": True},
                         {"name": "Title", "data_type": "nvarchar", "nullable": True},
                     ],
                 },
@@ -590,6 +592,8 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertIn("CREATE OR ALTER VIEW [dbo].[vw_Search_Articles]", result["view_sql"])
         self.assertIn("LEFT JOIN [dbo].[Company]", result["view_sql"])
         self.assertIn("AS [DocumentId]", result["view_sql"])
+        self.assertIn("CONCAT(", result["view_sql"])
+        self.assertIn("AS [dbo_Articles__DisplayName]", result["view_sql"])
         self.assertFalse(result["execution_performed"])
 
     def test_join_view_preview_rejects_one_to_many_document_multiplication(self):
