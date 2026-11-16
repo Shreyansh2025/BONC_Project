@@ -152,6 +152,33 @@ export default function PlatformPanel() {
   const selectedSourceTable = sourceTables.find((item) => item.name === table) ?? null;
   const sourceColumns = selectedSourceTable?.columns ?? [];
 
+  const joinableRelationships = useMemo(() => {
+    const relationships = sourceCatalog?.relationships || [];
+    if (!sourceCatalog || !table) return [];
+    const selected = new Set(selectedJoinRelationships);
+    const includedTables = new Set([schema + "." + table]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const relationship of relationships) {
+        if (!selected.has(relationshipKey(relationship))) continue;
+        const fromKey = relationship.from_schema + "." + relationship.from_table;
+        const toKey = relationship.to_schema + "." + relationship.to_table;
+        if (includedTables.has(fromKey) && !includedTables.has(toKey)) {
+          includedTables.add(toKey);
+          changed = true;
+        }
+      }
+    }
+    return relationships.filter((relationship) => {
+      const key = relationshipKey(relationship);
+      if (selected.has(key)) return true;
+      const fromKey = relationship.from_schema + "." + relationship.from_table;
+      const toKey = relationship.to_schema + "." + relationship.to_table;
+      return includedTables.has(fromKey) && !includedTables.has(toKey);
+    });
+  }, [sourceCatalog, schema, table, selectedJoinRelationships]);
+
   const loadHistory = async (id: string) => {
     try {
       setCategoryHistory(await getPlatformCategoryHistory(id));
@@ -601,7 +628,7 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>View schema</span><input value={viewSchema} onChange={(e) => setViewSchema(e.target.value)} /></label>
               <label className="setting-field"><span>View name</span><input value={viewName} onChange={(e) => setViewName(e.target.value)} /></label>
             </div>
-            {(sourceCatalog.relationships || []).map((relationship) => {
+            {joinableRelationships.map((relationship) => {
               const key = relationshipKey(relationship);
               return <label className="platform-checkbox" key={key}>
                 <input
