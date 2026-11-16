@@ -124,6 +124,32 @@ def admin_discover_source_schema(
         ) from exc
 
 
+@admin_router.get("/sources/{profile_id}/mapping-suggestions")
+def admin_suggest_source_mapping(
+    profile_id: str,
+    schema: str = Query(..., min_length=1, max_length=128),
+    table: str = Query(..., min_length=1, max_length=128),
+    authorization: str | None = Header(default=None),
+):
+    """Suggest a document ID and field mappings for one discovered table or view."""
+    _require_admin(authorization)
+    try:
+        return source_sync.suggest_source_mapping(
+            profile_id,
+            schema=schema,
+            table=table,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to generate source mapping suggestions. Check source metadata permissions.",
+        ) from exc
+
+
 @admin_router.get("/categories")
 def admin_list_categories(authorization: str | None = Header(default=None)):
     _require_admin(authorization)
