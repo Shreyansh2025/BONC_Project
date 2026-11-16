@@ -171,3 +171,151 @@ export async function getSearchSettingsHistory(limit = 50): Promise<SearchSettin
   const payload = await readJson<{ items: SearchSettingsHistoryItem[] }>(response);
   return payload.items || [];
 }
+
+
+export type PlatformFieldRole = "title" | "skill" | "location" | "category" | "description" | "general";
+
+export interface PlatformFieldConfig {
+  key: string;
+  source_column: string;
+  label: string;
+  role: PlatformFieldRole;
+  weight: number;
+  searchable: boolean;
+  semantic: boolean;
+  aliases: string[];
+}
+
+export interface PlatformRulesConfig {
+  lexical_enabled: boolean;
+  semantic_enabled: boolean;
+  semantic_min_score: number;
+  semantic_candidate_limit: number;
+  lexical_weight: number;
+  semantic_weight: number;
+}
+
+export interface PlatformCategoryConfig {
+  category_id: string;
+  display_name: string;
+  description?: string | null;
+  source:
+    | { type: "push" }
+    | {
+        type: "sqlserver";
+        connection_env: string;
+        schema: string;
+        table: string;
+        id_column: string;
+        max_records: number;
+        filters: Array<{
+          column: string;
+          operator: "eq" | "ne" | "in" | "is_null" | "not_null";
+          value?: string | number | boolean | null;
+          values?: Array<string | number | boolean>;
+        }>;
+      };
+  fields: PlatformFieldConfig[];
+  rules: PlatformRulesConfig;
+  active: boolean;
+  public_search_enabled: boolean;
+}
+
+export interface PlatformCategoryRecord {
+  config: PlatformCategoryConfig;
+  status: "active" | "disabled" | string;
+  config_version: number;
+  index_version: number;
+  updated_at_utc?: string | null;
+  updated_by?: string | null;
+}
+
+export interface PlatformSearchResult {
+  id: string;
+  title: string;
+  fields: Record<string, string | number | boolean | null>;
+  metadata: Record<string, string | number | boolean | null>;
+  score: number;
+  lexical_score: number;
+  semantic_score: number;
+  matched_fields: string[];
+  category: string;
+}
+
+export interface PlatformSearchResponse {
+  query: string;
+  category: string;
+  query_understanding: {
+    normalised_query: string;
+    matched_fields: Record<string, string[]>;
+    unmatched_tokens: string[];
+  };
+  data: PlatformSearchResult[];
+  total_count: number;
+  page: number;
+  page_size: number;
+  index_version: number;
+}
+
+export async function getPlatformCategories(): Promise<PlatformCategoryRecord[]> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories`, {
+    headers: { Accept: "application/json" },
+  });
+  return readJson<PlatformCategoryRecord[]>(response);
+}
+
+export async function createPlatformCategory(
+  config: PlatformCategoryConfig,
+): Promise<PlatformCategoryRecord> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(config),
+  });
+  return readJson<PlatformCategoryRecord>(response);
+}
+
+export async function syncPlatformCategory(categoryId: string): Promise<{ status: string; category_id: string; documents_synced: number }> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(categoryId)}/sync`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  return readJson(response);
+}
+
+export async function ingestPlatformDocuments(
+  categoryId: string,
+  documents: Array<{
+    document_id: string;
+    title?: string;
+    fields: Record<string, string | number | boolean | null>;
+    metadata?: Record<string, string | number | boolean | null>;
+  }>,
+  replaceAll = false,
+): Promise<{ status: string; category_id: string; documents_ingested: number }> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(categoryId)}/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ documents, replace_all: replaceAll }),
+  });
+  return readJson(response);
+}
+
+export async function runPlatformAdminSearch(input: {
+  query: string;
+  category: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<PlatformSearchResponse> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      query: input.query,
+      category: input.category,
+      page: input.page ?? 1,
+      page_size: input.pageSize ?? 10,
+    }),
+  });
+  return readJson<PlatformSearchResponse>(response);
+}
