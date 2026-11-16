@@ -331,11 +331,15 @@ def build_source_mapping_suggestions(
     title_candidates: list[dict[str, Any]] = []
     for column in available_columns:
         name = str(column["name"])
-        normalized_name = _normalise_column_name(name)
+        # Generated join views prefix columns with their source table. Infer
+        # their semantic role from the original leaf column name.
+        logical_name = name.split("__")[-1]
+        normalized_name = _normalise_column_name(logical_name)
         if normalized_name in _SENSITIVE_COLUMN_NAMES or any(
             normalized_name.endswith(sensitive) for sensitive in (
                 "password", "token", "secret", "hash", "salt", "aadhaar",
                 "aadhar", "passport", "phonenumber", "mobilenumber",
+                "email", "emailid", "mobile", "mobileno", "phone",
             )
         ):
             skipped.append({"column": name, "reason": "Sensitive or contact field excluded from automatic mapping"})
@@ -376,7 +380,7 @@ def build_source_mapping_suggestions(
         }
         chosen_title = min(
             title_candidates,
-            key=lambda item: priority.get(_normalise_column_name(str(item["name"])), 100),
+            key=lambda item: priority.get(_normalise_column_name(str(item["name"]).split("__")[-1]), 100),
         )
     elif suggestions:
         chosen_title = next(
