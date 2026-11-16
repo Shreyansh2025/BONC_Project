@@ -94,6 +94,24 @@ class SQLServerSourceConfig(StrictModel):
         return value
 
 
+class SourceValidationRequest(StrictModel):
+    """Preflight a SQL source and verify its chosen document ID column."""
+
+    schema: str = Field(min_length=1, max_length=128)
+    table: str = Field(min_length=1, max_length=128)
+    id_column: str = Field(min_length=1, max_length=128)
+    filters: list[SQLSourceFilter] = Field(default_factory=list, max_length=20)
+    max_records: int = Field(default=50000, ge=1, le=100000)
+
+    @field_validator("schema", "table", "id_column")
+    @classmethod
+    def validate_identifiers(cls, value: str) -> str:
+        value = value.strip()
+        if not _IDENTIFIER_RE.fullmatch(value):
+            raise ValueError("Schema, table and ID column must be simple SQL identifiers")
+        return value
+
+
 class PushSourceConfig(StrictModel):
     """Source for applications that push normalized records to the ingestion API."""
 
