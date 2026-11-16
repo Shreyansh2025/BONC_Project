@@ -822,7 +822,7 @@ export default function PlatformPanel() {
           </div>}
 
           <div className="settings-section-title">
-            <div><h3>Field mapping and weights</h3><p>Map source columns into standard searchable fields. Automatic suggestions use metadata only; review them before saving.</p></div>
+            <div><h3>Field mapping and weights</h3><p>Map source columns into standard searchable fields. Weights influence lexical and semantic relevance; automatic suggestions use metadata only and must be reviewed before saving.</p></div>
             <div className="settings-actions">
               {sourceType === "sqlserver" && <button type="button" className="secondary-button" onClick={() => void applyMappingSuggestions()} disabled={!sourceCatalog || !table || suggestingMapping}>
                 {suggestingMapping ? "Suggesting…" : "Auto-suggest mappings"}
