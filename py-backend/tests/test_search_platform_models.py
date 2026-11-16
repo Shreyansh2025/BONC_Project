@@ -3,6 +3,8 @@ import unittest
 from collections import Counter
 from unittest.mock import patch
 
+import numpy as np
+
 from pydantic import ValidationError
 
 from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest
@@ -10,6 +12,7 @@ from app.search_ai.services.platform_search import _lexical_score, _query_unders
 from app.search_ai.services.query_understanding import interpret_query
 from app.search_ai.services.platform_search import (
     CategoryIndex,
+    _build_weighted_semantic_vectors,
     _get_category_index,
     _phrase_score,
     search_category,
@@ -293,6 +296,37 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(index.field_values["skills"], {"C", "C++", "C#"})
         self.assertNotIn("A", index.field_values["name"])
 
+    def test_semantic_vectors_respect_configured_field_weights(self):
+        config = CategoryConfig.model_validate(people_config())
+        document = {
+            "document_id": "person-1",
+            "fields": {
+                "name": "A Person",
+                "skills": "Python",
+                "bio": None,
+                "location": None,
+            },
+        }
+
+        class FakeEmbeddingModel:
+            def encode(self, texts, convert_to_numpy=True, batch_size=64):
+                vectors = np.zeros((len(texts), 384), dtype="float32")
+                for index, value in enumerate(texts):
+                    if value.startswith("Name:"):
+                        vectors[index, 0] = 1.0
+                    elif value.startswith("Skills:"):
+                        vectors[index, 1] = 1.0
+                return vectors
+
+        with patch(
+            "app.search_ai.services.platform_search.get_model",
+            return_value=FakeEmbeddingModel(),
+        ):
+            vectors = _build_weighted_semantic_vectors(config, [document])
+
+        self.assertAlmostEqual(float(vectors[0, 0] / vectors[0, 1]), 5.0 / 4.0, places=5)
+        self.assertAlmostEqual(float(np.linalg.norm(vectors[0])), 1.0, places=5)
+
     def test_exact_document_id_returns_result_without_content_field_match(self):
         payload = people_config()
         payload["rules"] = {
@@ -328,7 +362,7 @@ class SearchPlatformModelTests(unittest.TestCase):
             vocabulary=Counter({"different": 1, "person": 1, "python": 1}),
             inverted_index={"different": {0}, "person": {0}, "python": {0}},
             field_values={"name": {"Different Person"}, "skills": {"Python"}},
-            document_id_lookup={"person 007": {0}},
+            document_id_lookup={"person-007": {0}},
         )
         with (
             patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
@@ -379,6 +413,15 @@ class SearchPlatformModelTests(unittest.TestCase):
 
         self.assertEqual(understood["synonym_expansions"], [])
         self.assertEqual(understood["expanded_lexical_query"], "python developer")
+
+    def test_category_rejects_overlapping_synonym_groups(self):
+        payload = people_config()
+        payload["synonyms"] = [
+            {"terms": ["developer", "engineer"]},
+            {"terms": ["engineer", "programmer"]},
+        ]
+        with self.assertRaisesRegex(ValidationError, "only one group"):
+            CategoryConfig.model_validate(payload)
 
     def test_query_understanding_distinguishes_c_cplusplus_and_csharp(self):
         config = CategoryConfig.model_validate(people_config())
@@ -459,6 +502,35 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertNotIn("EmailId", mapped_columns)
         self.assertNotIn("PasswordHash", mapped_columns)
         self.assertIn("IsDeleted", result["potential_filter_columns"])
+
+    def test_mapping_skips_primary_foreign_keys_and_sensitive_personal_fields(self):
+        catalog = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "tables": [{
+                "schema": "dbo",
+                "name": "People",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["PersonGuid"],
+                "columns": [
+                    {"name": "PersonGuid", "data_type": "uniqueidentifier", "nullable": False, "is_primary_key": True},
+                    {"name": "FullName", "data_type": "nvarchar", "nullable": True},
+                    {"name": "CompanyId", "data_type": "int", "nullable": True, "is_foreign_key": True},
+                    {"name": "PANNumber", "data_type": "nvarchar", "nullable": True},
+                    {"name": "SSN", "data_type": "nvarchar", "nullable": True},
+                    {"name": "Gender", "data_type": "nvarchar", "nullable": True},
+                ],
+            }],
+            "relationships": [],
+        }
+
+        result = build_source_mapping_suggestions(catalog, schema="dbo", table="People")
+        mapped_columns = {field["source_column"] for field in result["fields"]}
+
+        self.assertEqual(result["id_column_suggestion"]["column"], "PersonGuid")
+        self.assertEqual(mapped_columns, {"FullName"})
+        skipped_columns = {item["column"] for item in result["skipped_columns"]}
+        self.assertTrue({"PersonGuid", "CompanyId", "PANNumber", "SSN", "Gender"}.issubset(skipped_columns))
 
     def test_join_view_preview_generates_many_to_one_left_join_only(self):
         catalog = {
