@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import faiss
@@ -37,6 +37,7 @@ class CategoryIndex:
     vocabulary: Counter
     inverted_index: dict[str, set[int]]
     field_values: dict[str, set[str]]
+    document_id_lookup: dict[str, set[int]] = field(default_factory=dict)
 
 
 _INDEXES: dict[str, CategoryIndex] = {}
@@ -110,6 +111,12 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
                     values.add(clean_item)
         field_values[field.key] = values
 
+    document_id_lookup: dict[str, set[int]] = {}
+    for position, document in enumerate(documents):
+        normalized_id = _normalise(document.get("document_id"))
+        if normalized_id:
+            document_id_lookup.setdefault(normalized_id, set()).add(position)
+
     built = CategoryIndex(
         version=version,
         documents=documents,
@@ -117,6 +124,7 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
         vocabulary=vocabulary,
         inverted_index=inverted_index,
         field_values=field_values,
+        document_id_lookup=document_id_lookup,
     )
     with _INDEX_LOCK:
         _INDEXES[category_id] = built
@@ -254,6 +262,7 @@ def search_category(
     # names, locations and skills are retained as entered; each engine's
     # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
+    exact_identifier_positions = index.document_id_lookup.get(_normalise(query), set())
     synonym_expansions = understanding.get("synonym_expansions", [])
     expansion_terms = [
         term
@@ -279,10 +288,11 @@ def search_category(
         if config.rules.lexical_enabled
         else set()
     )
-    candidate_positions = lexical_positions | set(semantic_scores)
+    candidate_positions = lexical_positions | set(semantic_scores) | set(exact_identifier_positions)
 
     for position in sorted(candidate_positions):
         document = docs[position]
+        exact_identifier_match = position in exact_identifier_positions
         lexical_score, matched_fields = (
             _lexical_score(
                 lexical_query,
@@ -299,6 +309,10 @@ def search_category(
         phrase_bonus = min(10.0, phrase_score * 0.15)
         lexical_score = min(100.0, lexical_score + phrase_bonus)
         semantic_score = semantic_scores.get(position, 0.0)
+        if exact_identifier_match:
+            lexical_score = 100.0
+            phrase_score = 0.0
+            matched_fields = ["document_id"]
         if semantic_score < config.rules.semantic_min_score:
             semantic_score = 0.0
 
@@ -320,7 +334,11 @@ def search_category(
         )
         if denominator <= 0:
             continue
-        score = (lexical_component + semantic_component) / denominator
+        score = (
+            100.0
+            if exact_identifier_match
+            else (lexical_component + semantic_component) / denominator
+        )
         if score <= 0:
             continue
 
@@ -334,6 +352,7 @@ def search_category(
             "phrase_score": round(phrase_score, 2),
             "semantic_score": round(semantic_score, 2),
             "matched_fields": matched_fields,
+            "exact_identifier_match": exact_identifier_match,
             "category": category_id,
         }
         scored.append(result)
