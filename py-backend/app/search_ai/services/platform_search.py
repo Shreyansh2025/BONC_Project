@@ -85,7 +85,7 @@ def _build_weighted_semantic_vectors(
             convert_to_numpy=True,
             batch_size=64,
         )
-        model_vectors = np.asarray(model_vectors, dtype="float32")
+        model_vectors = np.ascontiguousarray(model_vectors, dtype="float32")
         expected_shape = (chunk_end - chunk_start, EMBEDDING_DIM)
         if model_vectors.ndim != 2 or model_vectors.shape != expected_shape:
             raise ValueError("Embedding model returned an unexpected vector shape")
