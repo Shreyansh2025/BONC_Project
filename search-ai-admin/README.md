@@ -109,7 +109,7 @@ Public search is separate at `POST /api/platform/search`. It returns results onl
 ### Current limitations
 
 - The first connector supports SQL Server tables/views through operator-registered reusable connection profiles and normalized push ingestion; it is not a universal connector for every database or API. Secret-manager-backed self-service credential creation is not included.
-- Query understanding currently provides configurable field-value/alias hints. It is not a full NLP entity extraction or intent-classification model.
+- Query understanding builds a deterministic, explainable query plan from configured field aliases and exact values present in the engine's indexed data. The lexical pipeline removes recognized field aliases while retaining exact values for matching; semantic search still uses the original natural-language query. Recognized values are ranking hints, not hard filters, to avoid false negatives. This is not an LLM-based query agent or full NLP entity extraction/intent-classification model.
 - Field weighting, lexical matching and the shared SentenceTransformer semantic index are configurable. Fine-tuning, feedback collection, training jobs, model evaluation and model-version activation are not included in this increment.
 - Category indexes are built lazily in each Search AI worker after the category is first searched or after its index version changes.
 - No existing Company/Product pipeline has been migrated. Validate the new path independently before considering migration.
