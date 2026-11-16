@@ -230,6 +230,16 @@ export interface PlatformCategoryRecord {
   updated_by?: string | null;
 }
 
+export interface PlatformCategoryHistoryItem {
+  history_id: number;
+  config_version: number;
+  config: PlatformCategoryConfig;
+  status: string;
+  changed_at_utc?: string | null;
+  changed_by?: string | null;
+  change_reason?: string | null;
+}
+
 export interface PlatformSearchResult {
   id: string;
   title: string;
@@ -325,6 +335,7 @@ export async function updatePlatformCategory(input: {
   categoryId: string;
   expectedVersion: number;
   config: PlatformCategoryConfig;
+  changeReason?: string;
 }): Promise<PlatformCategoryRecord> {
   const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(input.categoryId)}`, {
     method: "PUT",
@@ -332,7 +343,17 @@ export async function updatePlatformCategory(input: {
     body: JSON.stringify({
       expected_version: input.expectedVersion,
       config: input.config,
+      change_reason: input.changeReason?.trim() || null,
     }),
   });
   return readJson<PlatformCategoryRecord>(response);
+}
+
+
+export async function getPlatformCategoryHistory(categoryId: string): Promise<PlatformCategoryHistoryItem[]> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(categoryId)}/history`, {
+    headers: { Accept: "application/json" },
+  });
+  const payload = await readJson<{ items: PlatformCategoryHistoryItem[] }>(response);
+  return payload.items || [];
 }
