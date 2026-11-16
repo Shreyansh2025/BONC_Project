@@ -309,5 +309,6 @@ def search_category(
         "total_count": total,
         "page": page,
         "page_size": page_size,
+        "config_version": int(category["config_version"]),
         "index_version": index.version,
     }
