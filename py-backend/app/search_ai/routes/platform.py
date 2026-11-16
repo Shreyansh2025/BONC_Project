@@ -8,7 +8,13 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.search_ai.platform.models import CategoryConfig, IngestRequest, PlatformSearchRequest, SearchFeedbackRequest
+from app.search_ai.platform.models import (
+    CategoryConfig,
+    IngestRequest,
+    PlatformSearchRequest,
+    SearchFeedbackRequest,
+    SourceValidationRequest,
+)
 from app.search_ai.services import category_store, platform_search, source_sync
 
 router = APIRouter(prefix="/api/platform", tags=["Search AI platform"])
@@ -198,6 +204,34 @@ def admin_preview_join_view(
         raise HTTPException(
             status_code=502,
             detail="Unable to generate the view preview from this database schema.",
+        ) from exc
+
+
+@admin_router.post("/sources/{profile_id}/validate")
+def admin_validate_source(
+    profile_id: str,
+    body: SourceValidationRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Check source row counts and verify that the chosen document ID is unique and non-null."""
+    _require_admin(authorization)
+    try:
+        return source_sync.validate_sqlserver_source(
+            profile_id,
+            schema=body.schema,
+            table=body.table,
+            id_column=body.id_column,
+            filters=body.filters,
+            max_records=body.max_records,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to validate this source. Check the selected table, ID column and source permissions.",
         ) from exc
 
 
