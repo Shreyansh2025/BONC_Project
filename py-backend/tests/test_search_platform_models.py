@@ -8,7 +8,16 @@ from pydantic import ValidationError
 from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest
 from app.search_ai.services.platform_search import _lexical_score, _query_understanding, _contains_phrase
 from app.search_ai.services.query_understanding import interpret_query
-from app.search_ai.services.platform_search import CategoryIndex, search_category
+from app.search_ai.services.platform_search import (
+    CategoryIndex,
+    _get_category_index,
+    _phrase_score,
+    search_category,
+)
+from app.search_ai.services.source_sync import (
+    build_source_mapping_suggestions,
+    generate_join_view_preview,
+)
 
 
 def people_config():
@@ -248,6 +257,254 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(interpreted["lexical_query"], "python in indore")
         self.assertEqual(interpreted["matched_values"]["skills"], ["Python"])
         self.assertEqual(interpreted["matched_values"]["location"], ["Indore"])
+
+    def test_real_category_index_keeps_single_character_skill_values(self):
+        payload = people_config()
+        payload["rules"] = {
+            "lexical_enabled": True,
+            "semantic_enabled": False,
+            "semantic_min_score": 20,
+            "semantic_candidate_limit": 50,
+            "lexical_weight": 0.65,
+            "semantic_weight": 0.35,
+        }
+        config = CategoryConfig.model_validate(payload)
+        category = {
+            "config": config,
+            "index_version": 1,
+        }
+        documents = [{
+            "document_id": "person-1",
+            "title": "Person A",
+            "fields": {
+                "name": "A",
+                "skills": "C, C++, C#",
+                "bio": "Backend developer",
+                "location": "Indore",
+            },
+            "metadata": {},
+        }]
+        with (
+            patch("app.search_ai.services.platform_search._INDEXES", {}),
+            patch("app.search_ai.services.platform_search.category_store.list_documents", return_value=documents),
+        ):
+            index = _get_category_index(category)
+
+        self.assertEqual(index.field_values["skills"], {"C", "C++", "C#"})
+        self.assertNotIn("A", index.field_values["name"])
+
+    def test_synonym_group_expands_query_without_replacing_original_terms(self):
+        payload = people_config()
+        payload["synonyms"] = [{
+            "terms": ["developer", "engineer", "programmer"],
+        }]
+        config = CategoryConfig.model_validate(payload)
+
+        understood = interpret_query(
+            "backend developer",
+            config,
+            field_values={"name": set(), "skills": set(), "bio": set(), "location": set()},
+        )
+
+        self.assertEqual(
+            understood["synonym_expansions"],
+            [{
+                "matched_term": "developer",
+                "alternatives": ["engineer", "programmer"],
+            }],
+        )
+        self.assertEqual(
+            understood["expanded_lexical_query"],
+            "backend developer engineer programmer",
+        )
+
+    def test_exact_indexed_value_is_not_synonym_expanded(self):
+        payload = people_config()
+        payload["synonyms"] = [{"terms": ["Python", "Py"]}]
+        config = CategoryConfig.model_validate(payload)
+
+        understood = interpret_query(
+            "Python developer",
+            config,
+            field_values={"skills": {"Python"}, "name": set(), "bio": set(), "location": set()},
+        )
+
+        self.assertEqual(understood["synonym_expansions"], [])
+        self.assertEqual(understood["expanded_lexical_query"], "python developer")
+
+    def test_synonym_alternative_contributes_once_and_is_discounted(self):
+        config = CategoryConfig.model_validate(people_config())
+        alternative_document = {
+            "document_id": "person-1",
+            "fields": {"name": "", "skills": "", "bio": "Engineer", "location": ""},
+        }
+        direct_document = {
+            "document_id": "person-2",
+            "fields": {"name": "", "skills": "", "bio": "Developer", "location": ""},
+        }
+        expansion = [{
+            "matched_term": "developer",
+            "alternatives": ["engineer", "programmer"],
+        }]
+
+        alternative_score, _ = _lexical_score(
+            "developer", config, alternative_document, synonym_expansions=expansion
+        )
+        direct_score, _ = _lexical_score(
+            "developer", config, direct_document, synonym_expansions=expansion
+        )
+
+        self.assertAlmostEqual(alternative_score, direct_score * 0.85, places=5)
+
+    def test_phrase_score_rewards_exact_multiword_phrase(self):
+        config = CategoryConfig.model_validate(people_config())
+        document = {
+            "document_id": "person-1",
+            "fields": {
+                "name": "",
+                "skills": "",
+                "bio": "Experienced machine learning developer",
+                "location": "",
+            },
+        }
+        self.assertGreater(_phrase_score("machine learning", config, document), 0)
+
+    def test_source_mapping_suggestions_choose_primary_key_and_skip_sensitive_columns(self):
+        catalog = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "tables": [{
+                "schema": "dbo",
+                "name": "BoncUser",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["UserId"],
+                "columns": [
+                    {"name": "UserId", "data_type": "int", "nullable": False},
+                    {"name": "FullName", "data_type": "nvarchar", "nullable": True},
+                    {"name": "Skills", "data_type": "nvarchar", "nullable": True},
+                    {"name": "EmailId", "data_type": "nvarchar", "nullable": True},
+                    {"name": "PasswordHash", "data_type": "nvarchar", "nullable": True},
+                    {"name": "IsDeleted", "data_type": "bit", "nullable": True},
+                ],
+            }],
+            "relationships": [],
+        }
+
+        result = build_source_mapping_suggestions(catalog, schema="dbo", table="BoncUser")
+        mapped_columns = {field["source_column"] for field in result["fields"]}
+
+        self.assertEqual(result["id_column_suggestion"]["column"], "UserId")
+        self.assertIn("FullName", mapped_columns)
+        self.assertIn("Skills", mapped_columns)
+        self.assertNotIn("EmailId", mapped_columns)
+        self.assertNotIn("PasswordHash", mapped_columns)
+        self.assertIn("IsDeleted", result["potential_filter_columns"])
+
+    def test_join_view_preview_generates_many_to_one_left_join_only(self):
+        catalog = {
+            "profile_id": "CONTENT",
+            "database": "BONC_Dev",
+            "schemas": ["dbo"],
+            "tables": [
+                {
+                    "schema": "dbo",
+                    "name": "Articles",
+                    "type": "BASE TABLE",
+                    "primary_key_columns": ["Id"],
+                    "columns": [
+                        {"name": "Id", "data_type": "int", "nullable": False},
+                        {"name": "CompanyId", "data_type": "int", "nullable": True},
+                        {"name": "Title", "data_type": "nvarchar", "nullable": True},
+                    ],
+                },
+                {
+                    "schema": "dbo",
+                    "name": "Company",
+                    "type": "BASE TABLE",
+                    "primary_key_columns": ["CompanyId"],
+                    "columns": [
+                        {"name": "CompanyId", "data_type": "int", "nullable": False},
+                        {"name": "CompanyName", "data_type": "nvarchar", "nullable": True},
+                    ],
+                },
+            ],
+            "relationships": [{
+                "constraint_name": "FK_Articles_Company",
+                "from_schema": "dbo",
+                "from_table": "Articles",
+                "to_schema": "dbo",
+                "to_table": "Company",
+                "columns": [{
+                    "from_column": "CompanyId",
+                    "to_column": "CompanyId",
+                    "ordinal_position": 1,
+                }],
+            }],
+        }
+        with patch(
+            "app.search_ai.services.source_sync.discover_source_schema",
+            return_value=catalog,
+        ):
+            result = generate_join_view_preview(
+                "CONTENT",
+                base_schema="dbo",
+                base_table="Articles",
+                base_id_column="Id",
+                view_schema="dbo",
+                view_name="vw_Search_Articles",
+                selected_relationships=[catalog["relationships"][0]],
+            )
+
+        self.assertIn("CREATE OR ALTER VIEW [dbo].[vw_Search_Articles]", result["view_sql"])
+        self.assertIn("LEFT JOIN [dbo].[Company]", result["view_sql"])
+        self.assertIn("AS [DocumentId]", result["view_sql"])
+        self.assertFalse(result["execution_performed"])
+
+    def test_join_view_preview_rejects_one_to_many_document_multiplication(self):
+        catalog = {
+            "profile_id": "CONTENT",
+            "database": "BONC_Dev",
+            "schemas": ["dbo"],
+            "tables": [{
+                "schema": "dbo",
+                "name": "Company",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["CompanyId"],
+                "columns": [{"name": "CompanyId", "data_type": "int", "nullable": False}],
+            }, {
+                "schema": "dbo",
+                "name": "Articles",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["Id"],
+                "columns": [{"name": "Id", "data_type": "int", "nullable": False}],
+            }],
+            "relationships": [{
+                "constraint_name": "FK_Articles_Company",
+                "from_schema": "dbo",
+                "from_table": "Articles",
+                "to_schema": "dbo",
+                "to_table": "Company",
+                "columns": [{
+                    "from_column": "CompanyId",
+                    "to_column": "CompanyId",
+                    "ordinal_position": 1,
+                }],
+            }],
+        }
+        with patch(
+            "app.search_ai.services.source_sync.discover_source_schema",
+            return_value=catalog,
+        ):
+            with self.assertRaisesRegex(ValueError, "could duplicate search documents"):
+                generate_join_view_preview(
+                    "CONTENT",
+                    base_schema="dbo",
+                    base_table="Company",
+                    base_id_column="CompanyId",
+                    view_schema="dbo",
+                    view_name="vw_Search_Company",
+                    selected_relationships=[catalog["relationships"][0]],
+                )
 
 if __name__ == "__main__":
     unittest.main()
