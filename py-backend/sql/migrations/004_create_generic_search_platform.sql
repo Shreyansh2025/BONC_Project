@@ -36,6 +36,25 @@ BEGIN TRY
         );
     END;
 
+    IF OBJECT_ID(N'searchai.SearchCategoryHistory', N'U') IS NULL
+    BEGIN
+        CREATE TABLE searchai.SearchCategoryHistory (
+            HistoryId       BIGINT IDENTITY(1,1) NOT NULL,
+            CategoryId      NVARCHAR(64) NOT NULL,
+            ConfigVersion   INT NOT NULL,
+            ConfigJson      NVARCHAR(MAX) NOT NULL,
+            Status          NVARCHAR(20) NOT NULL,
+            ChangedAtUtc    DATETIME2(3) NOT NULL CONSTRAINT DF_SearchCategoryHistory_ChangedAtUtc DEFAULT SYSUTCDATETIME(),
+            ChangedBy       NVARCHAR(256) NOT NULL,
+            ChangeReason    NVARCHAR(1000) NULL,
+            CONSTRAINT PK_SearchCategoryHistory PRIMARY KEY (HistoryId),
+            CONSTRAINT FK_SearchCategoryHistory_Category FOREIGN KEY (CategoryId)
+                REFERENCES searchai.SearchCategories(CategoryId) ON DELETE CASCADE,
+            CONSTRAINT UQ_SearchCategoryHistory_Version UNIQUE (CategoryId, ConfigVersion),
+            CONSTRAINT CK_SearchCategoryHistory_ConfigJson CHECK (ISJSON(ConfigJson) = 1)
+        );
+    END;
+
     IF OBJECT_ID(N'searchai.SearchDocuments', N'U') IS NULL
     BEGIN
         CREATE TABLE searchai.SearchDocuments (
