@@ -302,14 +302,42 @@ export interface PlatformSearchResult {
   category: string;
 }
 
+export interface PlatformQueryConstraint {
+  field: string;
+  role: PlatformFieldRole;
+  values: string[];
+  match: "exact_index_value";
+  applied_as: "ranking_hint_only";
+}
+
+export interface PlatformQueryPlan {
+  query_type: "field_guided" | "free_text";
+  matched_aliases: Record<string, string[]>;
+  matched_values: Record<string, string[]>;
+  constraints: PlatformQueryConstraint[];
+  unmatched_tokens: string[];
+  lexical_query: string;
+  semantic_query: string;
+  filters_applied: boolean;
+  explanation: string;
+}
+
 export interface PlatformSearchResponse {
   query: string;
   category: string;
   query_understanding: {
     normalised_query: string;
+    query_type: "field_guided" | "free_text";
+    field_hints: Record<string, string[]>;
+    matched_aliases: Record<string, string[]>;
+    matched_values: Record<string, string[]>;
     matched_fields: Record<string, string[]>;
+    constraints: PlatformQueryConstraint[];
+    lexical_query: string;
     unmatched_tokens: string[];
+    explanation: string;
   };
+  query_plan: PlatformQueryPlan;
   data: PlatformSearchResult[];
   total_count: number;
   page: number;
