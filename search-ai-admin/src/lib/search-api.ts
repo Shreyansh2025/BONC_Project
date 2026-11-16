@@ -232,13 +232,29 @@ export interface PlatformSourceColumn {
   name: string;
   data_type: string;
   nullable: boolean;
+  is_primary_key?: boolean;
+  is_foreign_key?: boolean;
 }
 
 export interface PlatformSourceTable {
   schema: string;
   name: string;
   type: "BASE TABLE" | "VIEW" | string;
+  primary_key_columns?: string[];
   columns: PlatformSourceColumn[];
+}
+
+export interface PlatformSourceRelationship {
+  constraint_name: string;
+  from_schema: string;
+  from_table: string;
+  to_schema: string;
+  to_table: string;
+  columns: Array<{
+    from_column: string;
+    to_column: string;
+    ordinal_position: number;
+  }>;
 }
 
 export interface PlatformSourceCatalog {
@@ -246,6 +262,29 @@ export interface PlatformSourceCatalog {
   database: string;
   schemas: string[];
   tables: PlatformSourceTable[];
+  relationships?: PlatformSourceRelationship[];
+}
+
+export interface PlatformMappingSuggestionField extends PlatformFieldConfig {
+  confidence: "high" | "medium" | "low" | string;
+  reason: string;
+}
+
+export interface PlatformSourceMappingSuggestions {
+  profile_id: string;
+  database: string;
+  schema: string;
+  table: string;
+  table_type: string;
+  id_column_suggestion: {
+    column: string | null;
+    confidence: "high" | "medium" | "none" | string;
+    reason: string;
+  };
+  fields: PlatformMappingSuggestionField[];
+  skipped_columns: Array<{ column: string; reason: string }>;
+  potential_filter_columns: string[];
+  warnings: string[];
 }
 
 export async function getPlatformSourceProfiles(): Promise<PlatformSourceProfile[]> {
@@ -269,6 +308,22 @@ export async function discoverPlatformSourceSchema(input: {
     { headers: { Accept: "application/json" } },
   );
   return readJson<PlatformSourceCatalog>(response);
+}
+
+export async function suggestPlatformSourceMapping(input: {
+  profileId: string;
+  schema: string;
+  table: string;
+}): Promise<PlatformSourceMappingSuggestions> {
+  const params = new URLSearchParams({
+    schema: input.schema,
+    table: input.table,
+  });
+  const response = await fetch(
+    `${SEARCH_API_BASE}/api/admin/platform/sources/${encodeURIComponent(input.profileId)}/mapping-suggestions?${params.toString()}`,
+    { headers: { Accept: "application/json" } },
+  );
+  return readJson<PlatformSourceMappingSuggestions>(response);
 }
 
 export interface PlatformCategoryRecord {
