@@ -4,6 +4,7 @@ import {
   createPlatformCategory,
   discoverPlatformSourceSchema,
   suggestPlatformSourceMapping,
+  previewPlatformJoinView,
   getPlatformSourceProfiles,
   getPlatformCategories,
   getPlatformCategoryHistory,
@@ -24,6 +25,8 @@ import {
   type PlatformSourceProfile,
   type PlatformSourceCatalog,
   type PlatformSourceMappingSuggestions,
+  type PlatformSourceRelationship,
+  type PlatformJoinViewPreview,
 } from "../lib/search-api";
 
 const ROLE_OPTIONS: PlatformFieldRole[] = ["title", "skill", "location", "category", "description", "general"];
@@ -72,6 +75,11 @@ export default function PlatformPanel() {
   const [discoveringSource, setDiscoveringSource] = useState(false);
   const [suggestingMapping, setSuggestingMapping] = useState(false);
   const [mappingSuggestions, setMappingSuggestions] = useState<PlatformSourceMappingSuggestions | null>(null);
+  const [selectedJoinRelationships, setSelectedJoinRelationships] = useState<string[]>([]);
+  const [viewSchema, setViewSchema] = useState("dbo");
+  const [viewName, setViewName] = useState("vw_Search_People");
+  const [viewPreview, setViewPreview] = useState<PlatformJoinViewPreview | null>(null);
+  const [previewingView, setPreviewingView] = useState(false);
   const [schema, setSchema] = useState("dbo");
   const [table, setTable] = useState("Users");
   const [idColumn, setIdColumn] = useState("UserId");
@@ -261,7 +269,11 @@ export default function PlatformPanel() {
       const catalog = await discoverPlatformSourceSchema({ profileId: sourceProfileId });
       setSourceCatalog(catalog);
       setMappingSuggestions(null);
+      setSelectedJoinRelationships([]);
+      setViewPreview(null);
+
       const nextSchema = catalog.schemas.includes(schema) ? schema : (catalog.schemas[0] || "dbo");
+      setViewSchema(nextSchema);
       const tables = catalog.tables.filter((item) => item.schema === nextSchema);
       const selected = tables.find((item) => item.name === table) ?? tables[0];
       setSchema(nextSchema);
@@ -287,6 +299,45 @@ export default function PlatformPanel() {
       setError(getError(e, "Unable to inspect the configured SQL source."));
     } finally {
       setDiscoveringSource(false);
+    }
+  };
+
+  const relationshipKey = (relationship: PlatformSourceRelationship) => [
+    relationship.constraint_name,
+    relationship.from_schema,
+    relationship.from_table,
+    relationship.to_schema,
+    relationship.to_table,
+  ].join("|");
+
+  const previewJoinView = async () => {
+    if (!sourceProfileId || !sourceCatalog || !idColumn) return;
+    const relationships = (sourceCatalog.relationships || []).filter((relationship) =>
+      selectedJoinRelationships.includes(relationshipKey(relationship))
+    );
+    setPreviewingView(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await previewPlatformJoinView({
+        profileId: sourceProfileId,
+        baseSchema: schema,
+        baseTable: table,
+        baseIdColumn: idColumn,
+        viewSchema,
+        viewName,
+        selectedRelationships: relationships,
+      });
+      setViewPreview(result);
+      setNotice(
+        "Generated a SQL preview for " + result.view_schema + "." + result.view_name +
+        " with " + result.joined_tables.length + " tables. No database changes were made."
+      );
+    } catch (e) {
+      setViewPreview(null);
+      setError(getError(e, "Unable to generate the SQL view preview."));
+    } finally {
+      setPreviewingView(false);
     }
   };
 
@@ -520,6 +571,54 @@ export default function PlatformPanel() {
             </> : <p className="panel-intro wide">Create the engine, then select it below to push normalized records using the ingestion form.</p>}
           </div>
 
+          {sourceType === "sqlserver" && sourceCatalog && selectedSourceTable && (sourceCatalog.relationships || []).length > 0 && <div className="platform-history">
+            <div className="settings-section-title"><div><h3>Build a multi-table source view</h3><p>Select foreign-key relationships to include related parent-table fields. One-to-many joins are blocked to protect one document per base record.</p></div></div>
+            <div className="platform-form-grid">
+              <label className="setting-field"><span>View schema</span><input value={viewSchema} onChange={(e) => setViewSchema(e.target.value)} /></label>
+              <label className="setting-field"><span>View name</span><input value={viewName} onChange={(e) => setViewName(e.target.value)} /></label>
+            </div>
+            {(sourceCatalog.relationships || []).map((relationship) => {
+              const key = relationshipKey(relationship);
+              return <label className="platform-checkbox" key={key}>
+                <input
+                  type="checkbox"
+                  checked={selectedJoinRelationships.includes(key)}
+                  onChange={(e) => {
+                    setSelectedJoinRelationships((current) => e.target.checked
+                      ? [...current, key]
+                      : current.filter((item) => item !== key));
+                    setViewPreview(null);
+                  }}
+                />
+                {relationship.from_schema}.{relationship.from_table}
+                {" (" + relationship.columns.map((column) => column.from_column).join(", ") + ") → "}
+                {relationship.to_schema}.{relationship.to_table}
+                {" (" + relationship.columns.map((column) => column.to_column).join(", ") + ")"}
+              </label>;
+            })}
+            <div className="settings-actions">
+              <span className="action-spacer" />
+              <button type="button" className="secondary-button" onClick={() => void previewJoinView()} disabled={previewingView || selectedJoinRelationships.length === 0 || !idColumn}>
+                {previewingView ? "Generating preview…" : "Generate SQL view preview"}
+              </button>
+            </div>
+            {viewPreview && <div className="mini-panel">
+              <div>
+                <strong>{viewPreview.view_schema}.{viewPreview.view_name}</strong>
+                <p>Recommended Search AI source: {viewPreview.view_schema}.{viewPreview.view_name} · ID column: {viewPreview.document_id_column}</p>
+                {viewPreview.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+                <textarea className="platform-json-input" rows={14} readOnly value={viewPreview.view_sql} />
+                <div className="settings-actions">
+                  <span className="action-spacer" />
+                  <button type="button" className="secondary-button" onClick={() => {
+                    void navigator.clipboard.writeText(viewPreview.view_sql)
+                      .then(() => setNotice("SQL preview copied to clipboard."))
+                      .catch(() => setError("Clipboard access was unavailable. Select and copy the SQL manually."));
+                  }}>Copy SQL</button>
+                </div>
+              </div>
+            </div>}
+          </div>}
           {sourceType === "sqlserver" && sourceCatalog && selectedSourceTable && <div className="platform-history">
             <div className="settings-section-title"><div><h3>Discovered table relationships</h3><p>Declared foreign keys only. These identify possible joins; no joins are executed automatically.</p></div></div>
             {(sourceCatalog.relationships || [])
