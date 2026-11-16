@@ -167,6 +167,15 @@ class IngestRequest(StrictModel):
     replace_all: bool = False
 
 
+
+
+class SearchFeedbackRequest(StrictModel):
+    query: str = Field(min_length=1, max_length=500)
+    document_id: str = Field(min_length=1, max_length=200)
+    is_relevant: bool
+    comment: str | None = Field(default=None, max_length=1000)
+
+
 class PlatformSearchRequest(StrictModel):
     query: str = Field(min_length=1, max_length=500)
     category: str = Field(min_length=2, max_length=64)
