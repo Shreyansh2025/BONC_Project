@@ -217,16 +217,27 @@ def search_category(
         if semantic_score < config.rules.semantic_min_score:
             semantic_score = 0.0
 
-        if lexical_score <= 0 and semantic_score <= 0:
+        # A score from a disabled/zero-weight signal must not silently
+        # become the final score. Apply configured weights consistently.
+        lexical_component = (
+            lexical_score * config.rules.lexical_weight
+            if config.rules.lexical_enabled and config.rules.lexical_weight > 0
+            else 0.0
+        )
+        semantic_component = (
+            semantic_score * config.rules.semantic_weight
+            if config.rules.semantic_enabled and config.rules.semantic_weight > 0
+            else 0.0
+        )
+        denominator = (
+            (config.rules.lexical_weight if config.rules.lexical_enabled else 0.0)
+            + (config.rules.semantic_weight if config.rules.semantic_enabled else 0.0)
+        )
+        if denominator <= 0:
             continue
-        if lexical_score > 0 and semantic_score > 0:
-            denominator = config.rules.lexical_weight + config.rules.semantic_weight
-            score = (
-                lexical_score * config.rules.lexical_weight
-                + semantic_score * config.rules.semantic_weight
-            ) / denominator if denominator else max(lexical_score, semantic_score)
-        else:
-            score = lexical_score or semantic_score
+        score = (lexical_component + semantic_component) / denominator
+        if score <= 0:
+            continue
 
         result = {
             "id": document["document_id"],
