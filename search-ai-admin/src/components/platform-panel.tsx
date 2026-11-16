@@ -448,6 +448,19 @@ export default function PlatformPanel() {
           </div>
           <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={!selectedCategory || searching}>{searching ? "Searching…" : "Test category search"}</button></div>
         </form>
+        {feedbackSummary && <div className="platform-history">
+          <div className="settings-section-title"><div><h3>Relevance feedback</h3><p>Admin-labelled examples collected for future evaluation and model training.</p></div></div>
+          <div className="platform-feedback-counts">
+            <span>{feedbackSummary.total_count} total labels</span>
+            <span>{feedbackSummary.relevant_count} relevant</span>
+            <span>{feedbackSummary.not_relevant_count} not relevant</span>
+          </div>
+          {feedbackSummary.items.slice(0, 10).map((item) => <article className="platform-history-item" key={item.feedback_id}>
+            <strong>{item.is_relevant ? "Relevant" : "Not relevant"}</strong>
+            <span>{item.query}</span>
+            <small>{item.document_id} · {item.created_by || "Unknown admin"}</small>
+          </article>)}
+        </div>}
         {categoryHistory.length > 0 && <div className="platform-history">
           <div className="settings-section-title"><div><h3>Configuration history</h3><p>Previous category configurations are kept as audit snapshots.</p></div></div>
           {categoryHistory.map((item) => <article className="platform-history-item" key={item.history_id}>
@@ -460,7 +473,12 @@ export default function PlatformPanel() {
           <div className="platform-result-summary"><strong>{searchResult.total_count} results</strong><span>Index v{searchResult.index_version}</span></div>
           <div className="mini-panel"><div><strong>Query understanding (field hints)</strong><p>{pretty(searchResult.query_understanding)}</p></div></div>
           {searchResult.data.map((item) => <article className="platform-result-item" key={item.id}>
-            <div><strong>{item.title}</strong><small>{item.matched_fields.join(", ") || "Semantic match"}</small><pre>{pretty(item.fields)}</pre></div>
+            <div><strong>{item.title}</strong><small>{item.matched_fields.join(", ") || "Semantic match"}</small><pre>{pretty(item.fields)}</pre>
+              <div className="platform-feedback-actions">
+                <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, true)}>{feedbackSaving === item.id + ":relevant" ? "Saving…" : "Relevant"}</button>
+                <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, false)}>{feedbackSaving === item.id + ":not-relevant" ? "Saving…" : "Not relevant"}</button>
+              </div>
+            </div>
             <strong>{item.score.toFixed(1)} pts</strong>
           </article>)}
           {searchResult.data.length === 0 && <p className="panel-intro">No matching documents in this category yet.</p>}
