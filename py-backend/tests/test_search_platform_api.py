@@ -162,6 +162,55 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422, response.text)
 
 
+    def test_admin_source_validation_requires_token(self):
+        with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
+            response = self.client.post(
+                "/api/admin/platform/sources/PEOPLE/validate",
+                json={
+                    "schema": "dbo",
+                    "table": "People",
+                    "id_column": "PersonId",
+                },
+            )
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_source_validation_passes_selected_filters_to_service(self):
+        expected = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "schema": "dbo",
+            "table": "People",
+            "id_column": "PersonId",
+            "total_rows": 25,
+            "non_null_ids": 25,
+            "distinct_ids": 25,
+            "null_id_count": 0,
+            "duplicate_id_count": 0,
+            "max_records": 50000,
+            "is_valid": True,
+            "warnings": [],
+        }
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(source_sync, "validate_sqlserver_source", return_value=expected) as validate_mock,
+        ):
+            response = self.client.post(
+                "/api/admin/platform/sources/PEOPLE/validate",
+                headers=self.auth,
+                json={
+                    "schema": "dbo",
+                    "table": "People",
+                    "id_column": "PersonId",
+                    "filters": [{"column": "IsDeleted", "operator": "is_null"}],
+                    "max_records": 50000,
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["is_valid"])
+        validate_mock.assert_called_once()
+        self.assertEqual(validate_mock.call_args.kwargs["id_column"], "PersonId")
+        self.assertEqual(validate_mock.call_args.kwargs["filters"][0].column, "IsDeleted")
+
     def test_feedback_preserves_ranking_snapshot(self):
         expected = {
             "feedback_id": 7,
