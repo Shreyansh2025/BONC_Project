@@ -43,6 +43,21 @@ _INSERT_CATEGORY = text("""
         (:category_id, :display_name, :config_json, :status, 1, 0, :updated_by)
 """)
 
+_INSERT_CATEGORY_HISTORY = text("""
+    INSERT INTO searchai.SearchCategoryHistory
+        (CategoryId, ConfigVersion, ConfigJson, Status, ChangedBy, ChangeReason)
+    VALUES
+        (:category_id, :version, :config_json, :status, :updated_by, :change_reason)
+""")
+
+_LIST_CATEGORY_HISTORY = text("""
+    SELECT HistoryId, ConfigVersion, ConfigJson, Status,
+           ChangedAtUtc, ChangedBy, ChangeReason
+    FROM searchai.SearchCategoryHistory
+    WHERE CategoryId = :category_id
+    ORDER BY ConfigVersion DESC
+""")
+
 _UPDATE_CATEGORY = text("""
     UPDATE searchai.SearchCategories
     SET DisplayName = :display_name,
@@ -139,6 +154,11 @@ def create_category(config: CategoryConfig, *, updated_by: str) -> dict[str, Any
     try:
         with get_engine().begin() as connection:
             connection.execute(_INSERT_CATEGORY, values)
+        connection.execute(_INSERT_CATEGORY_HISTORY, {
+            **values,
+            "version": 1,
+            "change_reason": "Category created",
+        })
     except Exception as exc:
         # Keep database-specific duplicate-key errors out of the API response.
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower() or "2627" in str(exc):
@@ -168,8 +188,36 @@ def update_category(
             if current is None:
                 raise CategoryNotFoundError(config.category_id)
             raise CategoryStoreError(f"Configuration version conflict; current version is {current}")
+        connection.execute(_INSERT_CATEGORY_HISTORY, {
+            "category_id": config.category_id,
+            "version": expected_version + 1,
+            "config_json": config.model_dump_json(),
+            "status": "active" if config.active else "disabled",
+            "updated_by": updated_by,
+            "change_reason": change_reason,
+        })
     return get_category(config.category_id)
 
+
+def get_category_history(category_id: str) -> list[dict[str, Any]]:
+    # Ensure the category exists before querying its audit trail.
+    get_category(category_id)
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            _LIST_CATEGORY_HISTORY, {"category_id": category_id}
+        ).mappings().all()
+    return [
+        {
+            "history_id": int(row["HistoryId"]),
+            "config_version": int(row["ConfigVersion"]),
+            "config": CategoryConfig.model_validate_json(row["ConfigJson"]),
+            "status": row["Status"],
+            "changed_at_utc": row["ChangedAtUtc"],
+            "changed_by": row["ChangedBy"],
+            "change_reason": row["ChangeReason"],
+        }
+        for row in rows
+    ]
 
 def list_documents(category_id: str) -> list[dict[str, Any]]:
     with get_engine().connect() as connection:
