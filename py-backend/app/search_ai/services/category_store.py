@@ -73,6 +73,7 @@ _UPDATE_CATEGORY = text("""
 _INSERT_FEEDBACK = text("""
     INSERT INTO searchai.SearchFeedback
         (CategoryId, QueryText, DocumentId, IsRelevant, Comment, CreatedBy)
+    OUTPUT INSERTED.FeedbackId
     VALUES
         (:category_id, :query, :document_id, :is_relevant, :comment, :created_by)
 """)
@@ -276,7 +277,7 @@ def record_feedback(
             "comment": comment,
             "created_by": created_by,
         })
-        feedback_id = int(result.lastrowid or 0)
+        feedback_id = int(result.scalar_one())
     return {
         "feedback_id": feedback_id,
         "category_id": category_id,
