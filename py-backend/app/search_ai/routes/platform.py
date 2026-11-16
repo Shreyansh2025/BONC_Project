@@ -94,6 +94,36 @@ def admin_search_category(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@admin_router.get("/sources")
+def admin_list_source_profiles(authorization: str | None = Header(default=None)):
+    """List reusable server-configured SQL connections without returning their secrets."""
+    _require_admin(authorization)
+    return {"items": source_sync.list_source_profiles()}
+
+
+@admin_router.get("/sources/{profile_id}/schema")
+def admin_discover_source_schema(
+    profile_id: str,
+    schema: str | None = Query(default=None, min_length=1, max_length=128),
+    authorization: str | None = Header(default=None),
+):
+    """Test a named SQL connection and discover accessible schemas, tables and columns."""
+    _require_admin(authorization)
+    try:
+        return source_sync.discover_source_schema(profile_id, schema=schema)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        # Driver messages often contain server, database or login details. Keep
+        # them in server logs only; never echo connection diagnostics to browsers.
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to inspect this SQL source. Check that the profile is valid and has metadata/read access.",
+        ) from exc
+
+
 @admin_router.get("/categories")
 def admin_list_categories(authorization: str | None = Header(default=None)):
     _require_admin(authorization)
