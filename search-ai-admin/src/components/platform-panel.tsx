@@ -612,7 +612,10 @@ export default function PlatformPanel() {
 
           <div className="settings-section-title"><div><h3>Data source</h3><p>Credentials stay on the server. The browser stores only the name of a server-side connection setting.</p></div></div>
           <div className="platform-form-grid">
-            <label className="setting-field"><span>Source type</span><select value={sourceType} onChange={(e) => setSourceType(e.target.value as "sqlserver" | "push")}><option value="sqlserver">SQL Server table</option><option value="push">Application pushes records</option></select></label>
+            <label className="setting-field"><span>Source type</span><select value={sourceType} onChange={(e) => {
+              setSourceType(e.target.value as "sqlserver" | "push");
+              setSourceValidation(null);
+            }}><option value="sqlserver">SQL Server table</option><option value="push">Application pushes records</option></select></label>
             {sourceType === "sqlserver" ? <>
               <label className="setting-field"><span>Reusable SQL connection</span>
                 <select value={sourceProfileId} onChange={(e) => {
