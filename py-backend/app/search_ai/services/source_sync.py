@@ -202,7 +202,9 @@ _SENSITIVE_COLUMN_NAMES = {
     "aadhaar", "aadhar", "pan", "passport", "ssn", "socialsecuritynumber",
     "bankaccount", "accountnumber", "creditcard", "cvv", "otp",
     "privatekey", "email", "emailid", "phonenumber", "mobilenumber",
-    "mobile", "mobileno", "phone", "dateofbirth", "dob",
+    "mobile", "mobileno", "phone", "dateofbirth", "dob", "birthdate",
+    "gender", "religion", "caste", "ethnicity", "maritalstatus",
+    "salary", "income", "disability",
 }
 
 _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -493,6 +495,8 @@ def generate_join_view_preview(
         raise ValueError("The selected base table was not found in the discovered source")
     if base_id_column not in {column["name"] for column in base["columns"]}:
         raise ValueError("The selected document ID column does not exist on the base table")
+    if _is_sensitive_column_name(base_id_column):
+        raise ValueError("A sensitive or contact field cannot be used as the generated search document ID")
     if base["primary_key_columns"] != [base_id_column]:
         raise ValueError(
             "The base table must have this exact single-column primary key to preserve one document per base record"
