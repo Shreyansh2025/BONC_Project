@@ -47,6 +47,50 @@ def _normalise(value: Any) -> str:
     return normalise_query(value)
 
 
+def _build_weighted_semantic_vectors(
+    config: CategoryConfig,
+    documents: list[dict[str, Any]],
+) -> np.ndarray:
+    """Build one normalized semantic vector per document using field weights."""
+    vectors = np.zeros((len(documents), EMBEDDING_DIM), dtype="float32")
+    total_weights = np.zeros(len(documents), dtype="float32")
+    pending_texts: list[str] = []
+    pending_rows: list[int] = []
+    pending_weights: list[float] = []
+
+    for field_config in config.fields:
+        if (
+            not field_config.searchable
+            or not field_config.semantic
+            or field_config.weight <= 0
+        ):
+            continue
+        for row_index, document in enumerate(documents):
+            value = document.get("fields", {}).get(field_config.key)
+            if value is None or not str(value).strip():
+                continue
+            pending_texts.append(f"{field_config.label}: {str(value).strip()}")
+            pending_rows.append(row_index)
+            pending_weights.append(float(field_config.weight))
+
+    if not pending_texts:
+        return vectors
+
+    model_vectors = get_model().encode(pending_texts, convert_to_numpy=True)
+    model_vectors = np.asarray(model_vectors, dtype="float32")
+    if model_vectors.ndim != 2 or model_vectors.shape != (len(pending_texts), EMBEDDING_DIM):
+        raise ValueError("Embedding model returned an unexpected vector shape")
+
+    for vector, row_index, weight in zip(model_vectors, pending_rows, pending_weights):
+        vectors[row_index] += vector * weight
+        total_weights[row_index] += weight
+
+    populated_rows = total_weights > 0
+    vectors[populated_rows] /= total_weights[populated_rows, None]
+    faiss.normalize_L2(vectors)
+    return vectors
+
+
 def _field_text(config: CategoryConfig, document: dict[str, Any], *, semantic_only: bool = False) -> str:
     parts: list[str] = []
     values = document.get("fields", {})
@@ -82,12 +126,20 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
     if not documents:
         raise ValueError(f"Category '{category_id}' has no indexed documents. Sync or ingest data first.")
 
-    texts = [_field_text(config, doc, semantic_only=True) for doc in documents]
     vectors_index = None
-    if config.rules.semantic_enabled and any(text.strip() for text in texts):
-        vectors = get_model().encode(texts, convert_to_numpy=True)
-        vectors = np.asarray(vectors, dtype="float32")
-        faiss.normalize_L2(vectors)
+    has_semantic_fields = any(
+        field.searchable and field.semantic and field.weight > 0
+        for field in config.fields
+    )
+    has_semantic_values = any(
+        document.get("fields", {}).get(field.key) is not None
+        and str(document.get("fields", {}).get(field.key)).strip()
+        for document in documents
+        for field in config.fields
+        if field.searchable and field.semantic and field.weight > 0
+    )
+    if config.rules.semantic_enabled and has_semantic_fields and has_semantic_values:
+        vectors = _build_weighted_semantic_vectors(config, documents)
         vectors_index = faiss.IndexFlatIP(EMBEDDING_DIM)
         vectors_index.add(vectors)
 
