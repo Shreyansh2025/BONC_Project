@@ -7,7 +7,7 @@ import numpy as np
 
 from pydantic import ValidationError
 
-from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest
+from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest, SQLSourceFilter
 from app.search_ai.services.platform_search import _lexical_score, _query_understanding, _contains_phrase
 from app.search_ai.services.query_understanding import interpret_query
 from app.search_ai.services.platform_search import (
@@ -20,6 +20,7 @@ from app.search_ai.services.platform_search import (
 from app.search_ai.services.source_sync import (
     build_source_mapping_suggestions,
     generate_join_view_preview,
+    validate_sqlserver_source,
 )
 
 
@@ -471,6 +472,60 @@ class SearchPlatformModelTests(unittest.TestCase):
             },
         }
         self.assertGreater(_phrase_score("machine learning", config, document), 0)
+
+    def test_source_preflight_detects_null_and_duplicate_document_ids(self):
+        catalog = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "schemas": ["dbo"],
+            "tables": [{
+                "schema": "dbo",
+                "name": "People",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["PersonId"],
+                "columns": [
+                    {"name": "PersonId", "data_type": "int", "nullable": True},
+                    {"name": "IsDeleted", "data_type": "bit", "nullable": True},
+                ],
+            }],
+            "relationships": [],
+        }
+        connection = unittest.mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.mappings.return_value.one.return_value = {
+            "total_rows": 10,
+            "non_null_ids": 8,
+            "distinct_ids": 7,
+        }
+        engine = unittest.mock.MagicMock()
+        engine.connect.return_value = connection
+
+        with (
+            patch(
+                "app.search_ai.services.source_sync.discover_source_schema",
+                return_value=catalog,
+            ),
+            patch(
+                "app.search_ai.services.source_sync._engine_from_environment_name",
+                return_value=engine,
+            ),
+        ):
+            result = validate_sqlserver_source(
+                "PEOPLE",
+                schema="dbo",
+                table="People",
+                id_column="PersonId",
+                filters=[SQLSourceFilter(column="IsDeleted", operator="is_null")],
+            )
+
+        self.assertFalse(result["is_valid"])
+        self.assertEqual(result["null_id_count"], 2)
+        self.assertEqual(result["duplicate_id_count"], 1)
+        self.assertTrue(any("NULL" in warning for warning in result["warnings"]))
+        self.assertTrue(any("duplicate" in warning for warning in result["warnings"]))
+        query = connection.execute.call_args.args[0]
+        self.assertIn("COUNT_BIG(DISTINCT [PersonId])", query.text)
+        self.assertIn("[IsDeleted] IS NULL", query.text)
 
     def test_source_mapping_suggestions_choose_primary_key_and_skip_sensitive_columns(self):
         catalog = {
