@@ -403,6 +403,7 @@ export interface PlatformSearchResult {
   metadata: Record<string, string | number | boolean | null>;
   score: number;
   lexical_score: number;
+  phrase_score?: number;
   semantic_score: number;
   matched_fields: string[];
   category: string;
@@ -423,6 +424,8 @@ export interface PlatformQueryPlan {
   constraints: PlatformQueryConstraint[];
   unmatched_tokens: string[];
   lexical_query: string;
+  expanded_lexical_query: string;
+  synonym_expansions: Array<{ matched_term: string; alternatives: string[] }>;
   semantic_query: string;
   filters_applied: boolean;
   explanation: string;
@@ -440,6 +443,8 @@ export interface PlatformSearchResponse {
     matched_fields: Record<string, string[]>;
     constraints: PlatformQueryConstraint[];
     lexical_query: string;
+    expanded_lexical_query: string;
+    synonym_expansions: Array<{ matched_term: string; alternatives: string[] }>;
     unmatched_tokens: string[];
     explanation: string;
   };
