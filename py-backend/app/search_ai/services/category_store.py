@@ -70,6 +70,30 @@ _UPDATE_CATEGORY = text("""
     WHERE CategoryId = :category_id AND ConfigVersion = :expected_version
 """)
 
+_INSERT_FEEDBACK = text("""
+    INSERT INTO searchai.SearchFeedback
+        (CategoryId, QueryText, DocumentId, IsRelevant, Comment, CreatedBy)
+    VALUES
+        (:category_id, :query, :document_id, :is_relevant, :comment, :created_by)
+""")
+
+_LIST_FEEDBACK = text("""
+    SELECT TOP (:limit)
+        FeedbackId, QueryText, DocumentId, IsRelevant, Comment, CreatedAtUtc, CreatedBy
+    FROM searchai.SearchFeedback
+    WHERE CategoryId = :category_id
+    ORDER BY CreatedAtUtc DESC, FeedbackId DESC
+""")
+
+_FEEDBACK_COUNTS = text("""
+    SELECT
+        COUNT_BIG(*) AS TotalCount,
+        SUM(CASE WHEN IsRelevant = 1 THEN 1 ELSE 0 END) AS RelevantCount,
+        SUM(CASE WHEN IsRelevant = 0 THEN 1 ELSE 0 END) AS NotRelevantCount
+    FROM searchai.SearchFeedback
+    WHERE CategoryId = :category_id
+""")
+
 _DELETE_DOCUMENTS = text("DELETE FROM searchai.SearchDocuments WHERE CategoryId = :category_id")
 
 _INSERT_DOCUMENT = text("""
@@ -222,6 +246,75 @@ def get_category_history(category_id: str) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+def record_feedback(
+    category_id: str,
+    *,
+    query: str,
+    document_id: str,
+    is_relevant: bool,
+    comment: str | None,
+    created_by: str,
+) -> dict[str, Any]:
+    """Persist one admin-labelled relevance example for later model evaluation/training."""
+    with get_engine().begin() as connection:
+        exists = connection.execute(
+            text("""
+                SELECT 1
+                FROM searchai.SearchDocuments
+                WHERE CategoryId = :category_id AND DocumentId = :document_id
+            """),
+            {"category_id": category_id, "document_id": document_id},
+        ).first()
+        if exists is None:
+            raise CategoryNotFoundError("The document is not present in this category")
+        result = connection.execute(_INSERT_FEEDBACK, {
+            "category_id": category_id,
+            "query": query.strip(),
+            "document_id": document_id,
+            "is_relevant": bool(is_relevant),
+            "comment": comment,
+            "created_by": created_by,
+        })
+        feedback_id = int(result.lastrowid or 0)
+    return {
+        "feedback_id": feedback_id,
+        "category_id": category_id,
+        "query": query.strip(),
+        "document_id": document_id,
+        "is_relevant": bool(is_relevant),
+        "comment": comment,
+    }
+
+
+def get_feedback(category_id: str, *, limit: int = 100) -> dict[str, Any]:
+    if not 1 <= limit <= 500:
+        raise ValueError("limit must be between 1 and 500")
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            _LIST_FEEDBACK, {"category_id": category_id, "limit": limit}
+        ).mappings().all()
+        counts = connection.execute(
+            _FEEDBACK_COUNTS, {"category_id": category_id}
+        ).mappings().one()
+    return {
+        "total_count": int(counts["TotalCount"] or 0),
+        "relevant_count": int(counts["RelevantCount"] or 0),
+        "not_relevant_count": int(counts["NotRelevantCount"] or 0),
+        "items": [
+            {
+                "feedback_id": int(row["FeedbackId"]),
+                "query": row["QueryText"],
+                "document_id": row["DocumentId"],
+                "is_relevant": bool(row["IsRelevant"]),
+                "comment": row["Comment"],
+                "created_at_utc": row["CreatedAtUtc"],
+                "created_by": row["CreatedBy"],
+            }
+            for row in rows
+        ],
+    }
+
 
 def list_documents(category_id: str) -> list[dict[str, Any]]:
     with get_engine().connect() as connection:
