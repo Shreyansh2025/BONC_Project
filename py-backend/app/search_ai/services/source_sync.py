@@ -785,10 +785,16 @@ def validate_sqlserver_source(
     )
     id_identifier = _quote_identifier(id_column)
     where_sql, parameters = _build_filter_clause(filters)
+    trimmed_id_expression = (
+        f"LEN(LTRIM(RTRIM(CONVERT(NVARCHAR(MAX), {id_identifier}))))"
+    )
     query = text(
         "SELECT COUNT_BIG(*) AS total_rows, "
         f"COUNT_BIG({id_identifier}) AS non_null_ids, "
-        f"COUNT_BIG(DISTINCT {id_identifier}) AS distinct_ids "
+        f"COUNT_BIG(CASE WHEN {id_identifier} IS NOT NULL "
+        f"AND {trimmed_id_expression} = 0 THEN 1 END) AS blank_ids, "
+        f"COUNT_BIG(DISTINCT CASE WHEN {id_identifier} IS NOT NULL "
+        f"AND {trimmed_id_expression} > 0 THEN {id_identifier} END) AS distinct_ids "
         f"FROM {qualified_table}{where_sql}"
     )
 
@@ -801,14 +807,18 @@ def validate_sqlserver_source(
 
     total_rows = int(row["total_rows"] or 0)
     non_null_ids = int(row["non_null_ids"] or 0)
+    blank_ids = int(row["blank_ids"] or 0)
     distinct_ids = int(row["distinct_ids"] or 0)
     null_ids = total_rows - non_null_ids
-    duplicate_ids = non_null_ids - distinct_ids
+    usable_ids = non_null_ids - blank_ids
+    duplicate_ids = usable_ids - distinct_ids
     warnings: list[str] = []
     if total_rows == 0:
         warnings.append("The configured filters returned no rows.")
     if null_ids:
         warnings.append(f"{null_ids} source rows have a NULL document ID.")
+    if blank_ids:
+        warnings.append(f"{blank_ids} document IDs are empty or contain only whitespace.")
     if duplicate_ids:
         warnings.append(f"{duplicate_ids} duplicate document IDs were found.")
     if total_rows > max_records:
@@ -830,9 +840,10 @@ def validate_sqlserver_source(
         "non_null_ids": non_null_ids,
         "distinct_ids": distinct_ids,
         "null_id_count": null_ids,
+        "blank_id_count": blank_ids,
         "duplicate_id_count": duplicate_ids,
         "max_records": max_records,
-        "is_valid": total_rows > 0 and null_ids == 0 and duplicate_ids == 0,
+        "is_valid": total_rows > 0 and null_ids == 0 and blank_ids == 0 and duplicate_ids == 0,
         "warnings": warnings,
     }
 
