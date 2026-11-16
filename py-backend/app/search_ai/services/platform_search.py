@@ -219,11 +219,16 @@ def _lexical_score(
 
 
 def _phrase_score(query: str, config: CategoryConfig, document: dict[str, Any]) -> float:
-    """Return a weighted exact-phrase signal across searchable fields."""
-    phrase = _normalise(query)
-    if len(phrase.split()) < 2:
+    """Return a weighted exact-phrase signal for phrases within a longer query."""
+    tokens = _normalise(query).split()
+    if len(tokens) < 2:
         return 0.0
 
+    phrases = {
+        " ".join(tokens[start:start + size])
+        for size in range(2, min(4, len(tokens)) + 1)
+        for start in range(0, len(tokens) - size + 1)
+    }
     searchable_fields = [
         field for field in config.fields
         if field.searchable and field.weight > 0
@@ -236,7 +241,7 @@ def _phrase_score(query: str, config: CategoryConfig, document: dict[str, Any]) 
     best_weight = 0.0
     for field in searchable_fields:
         field_text = _normalise(values.get(field.key))
-        if field_text and _contains_phrase(field_text, phrase):
+        if field_text and any(_contains_phrase(field_text, phrase) for phrase in phrases):
             best_weight = max(best_weight, field.weight)
     return min(100.0, best_weight / total_weight * 100.0)
 
