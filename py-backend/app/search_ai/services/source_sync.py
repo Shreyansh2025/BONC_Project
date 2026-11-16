@@ -207,7 +207,7 @@ _SENSITIVE_COLUMN_NAMES = {
 
 _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
     "title": (
-        "title", "name", "fullname", "displayname", "headline", "subject",
+        "title", "name", "fullname", "displayname", "firstname", "headline", "subject",
         "productname", "companyname", "articletitle", "businessname",
     ),
     "skill": (
@@ -371,8 +371,8 @@ def build_source_mapping_suggestions(
     if title_candidates:
         priority = {
             "title": 0, "fullname": 1, "displayname": 2, "name": 3,
-            "productname": 4, "companyname": 5, "articletitle": 6,
-            "businessname": 7, "headline": 8, "subject": 9,
+            "firstname": 4, "productname": 5, "companyname": 6, "articletitle": 7,
+            "businessname": 8, "headline": 9, "subject": 10,
         }
         chosen_title = min(
             title_candidates,
