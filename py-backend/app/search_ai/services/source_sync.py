@@ -117,7 +117,7 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
             ON rc.UNIQUE_CONSTRAINT_CATALOG = referenced.CONSTRAINT_CATALOG
            AND rc.UNIQUE_CONSTRAINT_SCHEMA = referenced.CONSTRAINT_SCHEMA
            AND rc.UNIQUE_CONSTRAINT_NAME = referenced.CONSTRAINT_NAME
-           AND fk.ORDINAL_POSITION = referenced.ORDINAL_POSITION
+           AND fk.POSITION_IN_UNIQUE_CONSTRAINT = referenced.ORDINAL_POSITION
         {relationship_schema_clause}
         ORDER BY fk.TABLE_SCHEMA, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fk.ORDINAL_POSITION
     """)
