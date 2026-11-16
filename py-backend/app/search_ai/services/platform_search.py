@@ -138,13 +138,23 @@ def _query_understanding(
     )
 
 
-def _lexical_score(query: str, config: CategoryConfig, document: dict[str, Any]) -> tuple[float, list[str]]:
+def _lexical_score(
+    query: str,
+    config: CategoryConfig,
+    document: dict[str, Any],
+    *,
+    synonym_expansions: list[dict[str, Any]] | None = None,
+) -> tuple[float, list[str]]:
+    expansions = synonym_expansions or []
+    primary_synonym_tokens = {
+        token
+        for expansion in expansions
+        for token in str(expansion.get("matched_term", "")).split()
+    }
     query_tokens = [
         token for token in _normalise(query).split()
-        if token not in _STOP_WORDS
+        if token not in _STOP_WORDS and token not in primary_synonym_tokens
     ]
-    if not query_tokens:
-        return 0.0, []
 
     searchable_fields = [
         field for field in config.fields
@@ -167,14 +177,60 @@ def _lexical_score(query: str, config: CategoryConfig, document: dict[str, Any])
             continue
         field_tokens = set(value.split())
         matched_tokens = [token for token in set(query_tokens) if token in field_tokens]
-        if not matched_tokens:
-            continue
-        matched_fields.append(field.key)
+        if matched_tokens:
+            matched_fields.append(field.key)
         for token in matched_tokens:
             token_weights[token] = max(token_weights.get(token, 0.0), field.weight)
 
+        # A synonym group represents one concept, not a collection of extra
+        # query terms. Count at most one group contribution per document and
+        # prefer the direct term over an expanded alternative.
+        for index, expansion in enumerate(expansions):
+            primary = str(expansion.get("matched_term", ""))
+            alternatives = [
+                str(term) for term in expansion.get("alternatives", [])
+            ]
+            direct_match = bool(primary and _contains_phrase(value, primary))
+            alternative_match = any(
+                _contains_phrase(value, alternative)
+                for alternative in alternatives
+            )
+            if direct_match:
+                contribution = field.weight
+            elif alternative_match:
+                contribution = field.weight * 0.85
+            else:
+                continue
+            group_key = f"__synonym_group_{index}"
+            token_weights[group_key] = max(token_weights.get(group_key, 0.0), contribution)
+            if field.key not in matched_fields:
+                matched_fields.append(field.key)
+
     score = sum(token_weights.values()) / total_weight * 100.0
     return min(100.0, score), matched_fields
+
+
+def _phrase_score(query: str, config: CategoryConfig, document: dict[str, Any]) -> float:
+    """Return a weighted exact-phrase signal across searchable fields."""
+    phrase = _normalise(query)
+    if len(phrase.split()) < 2:
+        return 0.0
+
+    searchable_fields = [
+        field for field in config.fields
+        if field.searchable and field.weight > 0
+    ]
+    total_weight = sum(field.weight for field in searchable_fields)
+    if total_weight <= 0:
+        return 0.0
+
+    values = document.get("fields", {})
+    best_weight = 0.0
+    for field in searchable_fields:
+        field_text = _normalise(values.get(field.key))
+        if field_text and _contains_phrase(field_text, phrase):
+            best_weight = max(best_weight, field.weight)
+    return min(100.0, best_weight / total_weight * 100.0)
 
 
 def search_category(
@@ -198,6 +254,13 @@ def search_category(
     # names, locations and skills are retained as entered; each engine's
     # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
+    synonym_expansions = understanding.get("synonym_expansions", [])
+    expansion_terms = [
+        term
+        for expansion in synonym_expansions
+        for term in expansion.get("alternatives", [])
+    ]
+    expanded_lexical_query = " ".join([lexical_query, *expansion_terms]).strip()
     scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
@@ -212,7 +275,7 @@ def search_category(
                 semantic_scores[int(position)] = max(0.0, float(similarity) * 100.0)
 
     lexical_positions = (
-        candidate_indices(lexical_query, index.inverted_index, len(docs))
+        candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
         if config.rules.lexical_enabled
         else set()
     )
@@ -221,8 +284,20 @@ def search_category(
     for position in sorted(candidate_positions):
         document = docs[position]
         lexical_score, matched_fields = (
-            _lexical_score(lexical_query, config, document) if position in lexical_positions else (0.0, [])
+            _lexical_score(
+                lexical_query,
+                config,
+                document,
+                synonym_expansions=synonym_expansions,
+            )
+            if position in lexical_positions else (0.0, [])
         )
+        phrase_score = (
+            _phrase_score(lexical_query, config, document)
+            if position in lexical_positions else 0.0
+        )
+        phrase_bonus = min(10.0, phrase_score * 0.15)
+        lexical_score = min(100.0, lexical_score + phrase_bonus)
         semantic_score = semantic_scores.get(position, 0.0)
         if semantic_score < config.rules.semantic_min_score:
             semantic_score = 0.0
@@ -256,6 +331,7 @@ def search_category(
             "metadata": document.get("metadata", {}),
             "score": round(score, 2),
             "lexical_score": round(lexical_score, 2),
+            "phrase_score": round(phrase_score, 2),
             "semantic_score": round(semantic_score, 2),
             "matched_fields": matched_fields,
             "category": category_id,
@@ -276,6 +352,8 @@ def search_category(
             "constraints": understanding["constraints"],
             "unmatched_tokens": understanding["unmatched_tokens"],
             "lexical_query": lexical_query,
+            "expanded_lexical_query": expanded_lexical_query,
+            "synonym_expansions": synonym_expansions,
             "semantic_query": query,
             "filters_applied": False,
             "explanation": understanding["explanation"],
