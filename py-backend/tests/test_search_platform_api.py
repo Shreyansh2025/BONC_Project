@@ -161,5 +161,68 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 422, response.text)
 
+
+    def test_feedback_preserves_ranking_snapshot(self):
+        expected = {
+            "feedback_id": 7,
+            "category_id": "people",
+            "query": "python developer in Indore",
+            "document_id": "person-1",
+            "is_relevant": True,
+            "comment": None,
+            "result_rank": 2,
+            "result_score": 83.5,
+            "config_version": 4,
+            "index_version": 9,
+        }
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(category_store, "record_feedback", return_value=expected) as record_mock,
+        ):
+            response = self.client.post(
+                "/api/admin/platform/categories/people/feedback",
+                headers=self.auth,
+                json={
+                    "query": "python developer in Indore",
+                    "document_id": "person-1",
+                    "is_relevant": True,
+                    "result_rank": 2,
+                    "result_score": 83.5,
+                    "config_version": 4,
+                    "index_version": 9,
+                },
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json(), expected)
+        self.assertEqual(record_mock.call_args.kwargs["result_rank"], 2)
+        self.assertEqual(record_mock.call_args.kwargs["result_score"], 83.5)
+        self.assertEqual(record_mock.call_args.kwargs["config_version"], 4)
+        self.assertEqual(record_mock.call_args.kwargs["index_version"], 9)
+
+    def test_feedback_rejects_out_of_range_rank_or_score(self):
+        with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
+            bad_rank = self.client.post(
+                "/api/admin/platform/categories/people/feedback",
+                headers=self.auth,
+                json={
+                    "query": "python developer",
+                    "document_id": "person-1",
+                    "is_relevant": True,
+                    "result_rank": 0,
+                },
+            )
+            bad_score = self.client.post(
+                "/api/admin/platform/categories/people/feedback",
+                headers=self.auth,
+                json={
+                    "query": "python developer",
+                    "document_id": "person-1",
+                    "is_relevant": True,
+                    "result_score": 100.1,
+                },
+            )
+        self.assertEqual(bad_rank.status_code, 422)
+        self.assertEqual(bad_score.status_code, 422)
+
 if __name__ == "__main__":
     unittest.main()
