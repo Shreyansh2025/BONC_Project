@@ -162,6 +162,82 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422, response.text)
 
 
+    def test_admin_mapping_suggestions_requires_token(self):
+        with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
+            response = self.client.get(
+                "/api/admin/platform/sources/PEOPLE/mapping-suggestions?schema=dbo&table=People"
+            )
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_mapping_suggestions_passes_selected_source(self):
+        expected = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "schema": "dbo",
+            "table": "People",
+            "table_type": "BASE TABLE",
+            "id_column_suggestion": {
+                "column": "PersonId",
+                "confidence": "high",
+                "reason": "Declared single-column primary key",
+            },
+            "fields": [],
+            "skipped_columns": [],
+            "potential_filter_columns": ["IsDeleted"],
+            "warnings": [],
+        }
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(source_sync, "suggest_source_mapping", return_value=expected) as suggest_mock,
+        ):
+            response = self.client.get(
+                "/api/admin/platform/sources/PEOPLE/mapping-suggestions?schema=dbo&table=People",
+                headers=self.auth,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), expected)
+        suggest_mock.assert_called_once_with("PEOPLE", schema="dbo", table="People")
+
+    def test_admin_join_view_preview_returns_sql_without_executing_ddl(self):
+        expected = {
+            "profile_id": "CONTENT",
+            "database": "BONC_Dev",
+            "view_schema": "dbo",
+            "view_name": "vw_Search_Articles",
+            "document_id_column": "DocumentId",
+            "joined_tables": [{"schema": "dbo", "table": "Articles"}, {"schema": "dbo", "table": "Company"}],
+            "relationship_count": 1,
+            "view_sql": "CREATE OR ALTER VIEW [dbo].[vw_Search_Articles] AS SELECT 1;",
+            "execution_performed": False,
+            "warnings": ["Review before execution."],
+        }
+        relationship = {
+            "constraint_name": "FK_Articles_Company",
+            "from_schema": "dbo",
+            "from_table": "Articles",
+            "to_schema": "dbo",
+            "to_table": "Company",
+        }
+        with (
+            patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True),
+            patch.object(source_sync, "generate_join_view_preview", return_value=expected) as preview_mock,
+        ):
+            response = self.client.post(
+                "/api/admin/platform/sources/CONTENT/join-view-preview",
+                headers=self.auth,
+                json={
+                    "base_schema": "dbo",
+                    "base_table": "Articles",
+                    "base_id_column": "Id",
+                    "view_schema": "dbo",
+                    "view_name": "vw_Search_Articles",
+                    "selected_relationships": [relationship],
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["execution_performed"])
+        preview_mock.assert_called_once()
+
     def test_admin_source_validation_requires_token(self):
         with patch.dict(os.environ, {"SEARCH_ADMIN_API_TOKEN": "platform-admin-token"}, clear=True):
             response = self.client.post(
