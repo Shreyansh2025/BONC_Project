@@ -552,7 +552,12 @@ export default function PlatformPanel() {
                 ? <select value={table} onChange={(e) => {
                     const nextTable = sourceTables.find((item) => item.name === e.target.value);
                     setTable(e.target.value);
-                    setIdColumn(nextTable?.columns.find((column) => /id$/i.test(column.name))?.name || nextTable?.columns[0]?.name || "");
+                    setMappingSuggestions(null);
+                    setSelectedJoinRelationships([]);
+                    setViewPreview(null);
+                    setIdColumn(nextTable?.primary_key_columns?.length === 1
+                      ? nextTable.primary_key_columns[0]
+                      : (nextTable?.columns.find((column) => /id$/i.test(column.name))?.name || ""));
                   }} required>
                     <option value="">Select table or view</option>
                     {sourceTables.map((item) => <option key={item.name} value={item.name}>
