@@ -150,6 +150,10 @@ export default function PlatformPanel() {
 
   const labelResult = async (documentId: string, isRelevant: boolean) => {
     if (!selectedCategory || !searchResult) return;
+    const resultIndex = searchResult.data.findIndex((item) => item.id === documentId);
+    if (resultIndex < 0) return;
+    const result = searchResult.data[resultIndex];
+    const resultRank = (searchResult.page - 1) * searchResult.page_size + resultIndex + 1;
     const action = documentId + (isRelevant ? ":relevant" : ":not-relevant");
     setFeedbackSaving(action);
     setError("");
@@ -160,6 +164,10 @@ export default function PlatformPanel() {
         query: searchResult.query,
         documentId,
         isRelevant,
+        resultRank,
+        resultScore: result.score,
+        configVersion: searchResult.config_version,
+        indexVersion: searchResult.index_version,
       });
       setNotice(isRelevant ? "Marked result as relevant." : "Marked result as not relevant.");
       await loadFeedback(selectedCategory);
@@ -406,7 +414,7 @@ export default function PlatformPanel() {
       </section>
 
       <section className="panel platform-form-panel">
-        <div className="panel-title-row"><div><span className="section-kicker">01 / CATEGORY SETUP</span><h2>{editingVersion === null ? "Create a search engine" : "Edit search engine"}</h2></div><span className="method-badge">Admin API</span></div>
+        <div className="panel-title-row"><div><span className="section-kicker">01 / ENGINE SETUP</span><h2>{editingVersion === null ? "Create a search engine" : "Edit search engine"}</h2></div><span className="method-badge">Admin API</span></div>
         <form onSubmit={(event) => void createCategory(event)}>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Engine ID</span><small>Lowercase identifier, e.g. people or articles.</small><input required value={categoryId} onChange={(e) => setCategoryId(e.target.value)} pattern="[a-z][a-z0-9_-]{1,62}" /></label>
@@ -536,7 +544,7 @@ export default function PlatformPanel() {
       <section className="panel platform-test-panel">
         <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test engine data</h2></div><span className="method-badge">Admin only</span></div>
         <div className="platform-form-grid">
-          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select an engine</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
+          <label className="setting-field"><span>Search engine</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select an engine</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
           <div className="setting-field"><span>Selected engine source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
         </div>
         {selectedRecord?.config.source.type === "push" && <form onSubmit={(event) => void ingest(event)}>
@@ -559,7 +567,7 @@ export default function PlatformPanel() {
           {feedbackSummary.items.slice(0, 10).map((item) => <article className="platform-history-item" key={item.feedback_id}>
             <strong>{item.is_relevant ? "Relevant" : "Not relevant"}</strong>
             <span>{item.query}</span>
-            <small>{item.document_id} · {item.created_by || "Unknown admin"}</small>
+            <small>{item.document_id} · {item.created_by || "Unknown admin"}{item.result_rank ? " · rank #" + item.result_rank : ""}{item.config_version ? " · config v" + item.config_version : ""}{item.index_version !== null && item.index_version !== undefined ? " · index v" + item.index_version : ""}</small>
           </article>)}
         </div>}
         {categoryHistory.length > 0 && <div className="platform-history">
