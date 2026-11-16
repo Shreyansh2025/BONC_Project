@@ -15,6 +15,7 @@ from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOP_WORDS = {"a", "an", "and", "at", "for", "in", "near", "of", "on", "the", "to", "with"}
 _INDEX_LOCK = threading.RLock()
 
 
@@ -121,36 +122,42 @@ def _query_understanding(query: str, config: CategoryConfig, documents: list[dic
 
 
 def _lexical_score(query: str, config: CategoryConfig, document: dict[str, Any]) -> tuple[float, list[str]]:
-    query_tokens = _normalise(query).split()
+    query_tokens = [
+        token for token in _normalise(query).split()
+        if token not in _STOP_WORDS
+    ]
     if not query_tokens:
         return 0.0, []
-    total_weight = sum(field.weight for field in config.fields if field.searchable and field.weight > 0)
+
+    searchable_fields = [
+        field for field in config.fields
+        if field.searchable and field.weight > 0
+    ]
+    total_weight = sum(field.weight for field in searchable_fields)
     if total_weight <= 0:
         return 0.0, []
 
     values = document.get("fields", {})
-    matched_weight = 0.0
+    # A query token contributes the weight of the most important field in
+    # which it appears. This allows a natural-language query to match across
+    # multiple fields (name + skills + location) without dividing every
+    # field's contribution by every word in the whole query.
+    token_weights: dict[str, float] = {}
     matched_fields: list[str] = []
-    normal_query = _normalise(query)
-
-    for field in config.fields:
-        if not field.searchable or field.weight <= 0:
-            continue
+    for field in searchable_fields:
         value = _normalise(values.get(field.key))
         if not value:
             continue
         field_tokens = set(value.split())
-        hits = sum(1 for token in set(query_tokens) if token in field_tokens)
-        phrase_hit = len(normal_query) > 0 and normal_query in value
-        if hits:
-            coverage = hits / len(set(query_tokens))
-            contribution = field.weight * coverage
-            if phrase_hit:
-                contribution = field.weight
-            matched_weight += contribution
-            matched_fields.append(field.key)
+        matched_tokens = [token for token in set(query_tokens) if token in field_tokens]
+        if not matched_tokens:
+            continue
+        matched_fields.append(field.key)
+        for token in matched_tokens:
+            token_weights[token] = max(token_weights.get(token, 0.0), field.weight)
 
-    return min(100.0, (matched_weight / total_weight) * 100.0), matched_fields
+    score = sum(token_weights.values()) / total_weight * 100.0
+    return min(100.0, score), matched_fields
 
 
 def search_category(
