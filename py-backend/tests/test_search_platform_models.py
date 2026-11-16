@@ -332,6 +332,18 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(understood["synonym_expansions"], [])
         self.assertEqual(understood["expanded_lexical_query"], "python developer")
 
+    def test_query_understanding_distinguishes_c_cplusplus_and_csharp(self):
+        config = CategoryConfig.model_validate(people_config())
+        values = {"skills": {"C", "C++", "C#"}, "name": set(), "bio": set(), "location": set()}
+
+        c_query = interpret_query("C developer", config, field_values=values)
+        cpp_query = interpret_query("C++ developer", config, field_values=values)
+        csharp_query = interpret_query("C# developer", config, field_values=values)
+
+        self.assertEqual(c_query["matched_values"]["skills"], ["C"])
+        self.assertEqual(cpp_query["matched_values"]["skills"], ["C++"])
+        self.assertEqual(csharp_query["matched_values"]["skills"], ["C#"])
+
     def test_synonym_alternative_contributes_once_and_is_discounted(self):
         config = CategoryConfig.model_validate(people_config())
         alternative_document = {
