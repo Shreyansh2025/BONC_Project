@@ -13,7 +13,12 @@ import numpy as np
 from app.search_ai.platform.models import CategoryConfig
 from app.search_ai.services import category_store
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
-from app.search_ai.services.search_common import build_vocabulary, correct_query
+from app.search_ai.services.search_common import (
+    build_inverted_index,
+    build_vocabulary,
+    candidate_indices,
+    correct_query,
+)
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -27,6 +32,8 @@ class CategoryIndex:
     documents: list[dict[str, Any]]
     vectors_index: faiss.Index | None
     vocabulary: Counter
+    inverted_index: dict[str, set[int]]
+    field_values: dict[str, set[str]]
 
 
 _INDEXES: dict[str, CategoryIndex] = {}
@@ -88,19 +95,43 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
         vectors_index = faiss.IndexFlatIP(EMBEDDING_DIM)
         vectors_index.add(vectors)
 
-    vocabulary = build_vocabulary(documents, lambda doc: _field_text(config, doc))
+    combined_text = lambda doc: _field_text(config, doc)
+    vocabulary = build_vocabulary(documents, combined_text)
+    inverted_index = build_inverted_index(documents, combined_text)
+    field_values: dict[str, set[str]] = {}
+    for field in config.fields:
+        if not field.searchable:
+            continue
+        values: set[str] = set()
+        for document in documents:
+            raw_value = document.get("fields", {}).get(field.key)
+            if raw_value is None:
+                continue
+            for raw_item in str(raw_value).split(","):
+                clean_item = raw_item.strip()
+                if len(_normalise(clean_item)) >= 2:
+                    values.add(clean_item)
+        field_values[field.key] = values
+
     built = CategoryIndex(
         version=version,
         documents=documents,
         vectors_index=vectors_index,
         vocabulary=vocabulary,
+        inverted_index=inverted_index,
+        field_values=field_values,
     )
     with _INDEX_LOCK:
         _INDEXES[category_id] = built
     return built
 
 
-def _query_understanding(query: str, config: CategoryConfig, documents: list[dict[str, Any]]) -> dict[str, Any]:
+def _query_understanding(
+    query: str,
+    config: CategoryConfig,
+    documents: list[dict[str, Any]] | None = None,
+    field_values: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
     """Lightweight, data-driven field hint extraction.
 
     It identifies field values/aliases explicitly present in the query. It
@@ -118,14 +149,18 @@ def _query_understanding(query: str, config: CategoryConfig, documents: list[dic
             alias_text = _normalise(alias)
             if alias_text and _contains_phrase(normal_query, alias_text):
                 recognised.add(alias)
-        for doc in documents:
-            raw = doc.get("fields", {}).get(field.key)
-            if raw is None:
-                continue
-            for value in str(raw).split(","):
-                candidate = _normalise(value)
-                if len(candidate) >= 2 and _contains_phrase(normal_query, candidate):
-                    recognised.add(str(value).strip())
+        if field_values is not None:
+            candidates = field_values.get(field.key, set())
+        else:
+            candidates = set()
+            for doc in documents or []:
+                raw = doc.get("fields", {}).get(field.key)
+                if raw is not None:
+                    candidates.update(value.strip() for value in str(raw).split(",") if value.strip())
+        for value in candidates:
+            candidate = _normalise(value)
+            if len(candidate) >= 2 and _contains_phrase(normal_query, candidate):
+                recognised.add(str(value).strip())
         if recognised:
             field_hints[field.key] = sorted(recognised)
     return {
@@ -191,7 +226,9 @@ def search_category(
 
     index = _get_category_index(category)
     docs = index.documents
-    understanding = _query_understanding(query, config, docs)
+    understanding = _query_understanding(
+        query, config, field_values=index.field_values
+    )
     # Spell correction is learned from this category's own indexed vocabulary,
     # so a person's name or a specialist term is not corrected using the
     # Product catalog's vocabulary.
@@ -209,9 +246,17 @@ def search_category(
             if position >= 0:
                 semantic_scores[int(position)] = max(0.0, float(similarity) * 100.0)
 
-    for position, document in enumerate(docs):
+    lexical_positions = (
+        candidate_indices(lexical_query, index.inverted_index, len(docs))
+        if config.rules.lexical_enabled
+        else set()
+    )
+    candidate_positions = lexical_positions | set(semantic_scores)
+
+    for position in sorted(candidate_positions):
+        document = docs[position]
         lexical_score, matched_fields = (
-            _lexical_score(lexical_query, config, document) if config.rules.lexical_enabled else (0.0, [])
+            _lexical_score(lexical_query, config, document) if position in lexical_positions else (0.0, [])
         )
         semantic_score = semantic_scores.get(position, 0.0)
         if semantic_score < config.rules.semantic_min_score:
