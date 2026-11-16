@@ -29,6 +29,24 @@ def contains_phrase(normal_query: str, phrase: str) -> bool:
     return re.search(pattern, normal_query) is not None
 
 
+def _phrase_variants(phrase: str) -> tuple[str, ...]:
+    """Return conservative singular/plural forms for a configured alias."""
+    words = phrase.split()
+    if not words:
+        return ()
+    last = words[-1]
+    if len(last) < 3:
+        return (phrase,)
+    if last.endswith("y") and len(last) > 1 and last[-2] not in "aeiou":
+        plural = last[:-1] + "ies"
+    elif last.endswith(("s", "x", "z", "ch", "sh")):
+        plural = last + "es"
+    else:
+        plural = last + "s"
+    plural_phrase = " ".join([*words[:-1], plural])
+    return (phrase, plural_phrase) if plural_phrase != phrase else (phrase,)
+
+
 def _without_phrases(query: str, phrases: set[str]) -> str:
     result = query
     # Remove longer expressions first so a short alias cannot partially consume
@@ -69,10 +87,14 @@ def interpret_query(
         for alias in field.aliases:
             alias_text = normalise_query(alias)
             # Ignore one-character aliases: they are too likely to match noise.
-            if len(alias_text.replace(" ", "")) >= 2 and contains_phrase(normalised, alias_text):
-                aliases.add(alias.strip())
-                alias_phrases.add(alias_text)
-                recognised_phrases.add(alias_text)
+            if len(alias_text.replace(" ", "")) < 2:
+                continue
+            for variant in _phrase_variants(alias_text):
+                if contains_phrase(normalised, variant):
+                    aliases.add(alias.strip())
+                    alias_phrases.add(variant)
+                    recognised_phrases.add(variant)
+                    break
 
         if field_values is not None:
             candidates = field_values.get(field.key, set())
