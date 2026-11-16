@@ -370,14 +370,35 @@ export default function PlatformPanel() {
             <label className="setting-field wide"><span>Change reason</span><input value={changeReason} onChange={(e) => setChangeReason(e.target.value)} maxLength={1000} placeholder="Why are you creating or changing this category?" /></label>
           </div>
           <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create category" : "Save category changes"}</button>
-            {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => setEditingVersion(null)}>Cancel edit</button>}</div>
+            {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => {
+              setEditingVersion(null);
+              setCategoryId("people");
+              setDisplayName("People");
+              setDescription("Search BONC people profiles");
+              setSourceType("sqlserver");
+              setConnectionEnv("SEARCH_SOURCE_PEOPLE");
+              setSchema("dbo");
+              setTable("Users");
+              setIdColumn("UserId");
+              setMaxRecords(50000);
+              setSourceFilters([]);
+              setFields(INITIAL_FIELDS);
+              setMinScore(20);
+              setLexicalWeight(0.65);
+              setSemanticWeight(0.35);
+              setLexicalEnabled(true);
+              setSemanticEnabled(true);
+              setCandidateLimit(50);
+              setPublicEnabled(false);
+              setChangeReason("");
+            }}>Cancel edit</button>}</div>
         </form>
       </section>
 
       <section className="panel platform-test-panel">
         <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test category data</h2></div><span className="method-badge">Admin only</span></div>
         <div className="platform-form-grid">
-          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); }}><option value="">Select a category</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
+          <label className="setting-field"><span>Category</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) void loadHistory(e.target.value); else setCategoryHistory([]); }}><option value="">Select a category</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
           <div className="setting-field"><span>Selected source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
         </div>
         {selectedRecord?.config.source.type === "push" && <form onSubmit={(event) => void ingest(event)}>
