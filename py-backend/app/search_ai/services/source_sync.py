@@ -378,7 +378,7 @@ def build_source_mapping_suggestions(
                 "productid", "companyid", "documentid",
             }
             or (
-                normalized_name.endswith("id")
+                normalized_name.endswith(("id", "uuid", "guid"))
                 and str(column.get("data_type", "")).lower() in {
                     "uniqueidentifier", "int", "bigint", "smallint", "tinyint"
                 }
