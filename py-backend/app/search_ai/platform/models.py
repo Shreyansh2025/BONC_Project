@@ -177,6 +177,19 @@ class CategoryConfig(StrictModel):
             raise ValueError("At least one field must be searchable")
         if not any(item.role == "title" for item in self.fields):
             raise ValueError("At least one field must have the title role")
+
+        synonym_owners: dict[str, int] = {}
+        for group_index, group in enumerate(self.synonyms):
+            for term in group.terms:
+                normalised_term = " ".join(
+                    re.findall(r"[a-z0-9]+(?:[+#]+)?", term.lower())
+                )
+                previous_group = synonym_owners.get(normalised_term)
+                if previous_group is not None and previous_group != group_index:
+                    raise ValueError(
+                        "A synonym term can belong to only one group per category"
+                    )
+                synonym_owners[normalised_term] = group_index
         return self
 
 
