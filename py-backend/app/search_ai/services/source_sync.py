@@ -21,14 +21,14 @@ def _quote_identifier(value: str) -> str:
     return f"[{value}]"
 
 
-def _source_engine(source: SQLServerSourceConfig):
-    connection_value = os.getenv(source.connection_env, "").strip()
+def _engine_from_environment_name(environment_name: str):
+    if not re.fullmatch(r"SEARCH_SOURCE_[A-Z0-9_]{1,80}", environment_name):
+        raise ValueError("Invalid source profile name")
+    connection_value = os.getenv(environment_name, "").strip()
     if not connection_value:
-        raise RuntimeError(
-            f"Source connection is not configured on the server: {source.connection_env}"
-        )
-    # Credentials never come from the browser or category JSON. An operator
-    # provisions this environment variable on the Search AI host.
+        raise RuntimeError(f"Source connection is not configured on the server: {environment_name}")
+    # Credentials never come from the browser or engine configuration. An
+    # operator provisions each reusable profile on the Search AI host.
     if connection_value.lower().startswith("mssql+pyodbc://"):
         return create_engine(connection_value, pool_pre_ping=True, pool_size=1, max_overflow=1)
     return create_engine(
@@ -37,6 +37,71 @@ def _source_engine(source: SQLServerSourceConfig):
         pool_size=1,
         max_overflow=1,
     )
+
+
+def _source_engine(source: SQLServerSourceConfig):
+    return _engine_from_environment_name(source.connection_env)
+
+
+def list_source_profiles() -> list[dict[str, str]]:
+    """List configured profile names without exposing connection strings or credentials."""
+    prefix = "SEARCH_SOURCE_"
+    return [
+        {"profile_id": name[len(prefix):], "connection_env": name}
+        for name, value in sorted(os.environ.items())
+        if name.startswith(prefix) and name != prefix and value.strip()
+        and re.fullmatch(r"[A-Z0-9_]{1,80}", name[len(prefix):])
+    ]
+
+
+def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[str, Any]:
+    """Test a configured SQL Server profile and list accessible tables/views and columns."""
+    if not re.fullmatch(r"[A-Z0-9_]{1,80}", profile_id):
+        raise ValueError("Invalid source profile ID")
+    if schema is not None and not _IDENTIFIER.fullmatch(schema):
+        raise ValueError("Invalid SQL schema name")
+
+    engine = _engine_from_environment_name(f"SEARCH_SOURCE_{profile_id}")
+    query = text("""
+        SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE,
+               COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.TABLES AS tables_view
+        INNER JOIN INFORMATION_SCHEMA.COLUMNS AS columns_view
+            ON tables_view.TABLE_SCHEMA = columns_view.TABLE_SCHEMA
+           AND tables_view.TABLE_NAME = columns_view.TABLE_NAME
+        WHERE (:schema_name IS NULL OR TABLE_SCHEMA = :schema_name)
+          AND TABLE_TYPE IN (N'BASE TABLE', N'VIEW')
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+    """)
+    try:
+        with engine.connect() as connection:
+            database_name = connection.execute(text("SELECT DB_NAME()")).scalar_one()
+            rows = connection.execute(query, {"schema_name": schema}).mappings().all()
+    finally:
+        engine.dispose()
+
+    tables: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row["TABLE_SCHEMA"]), str(row["TABLE_NAME"]))
+        table = tables.setdefault(key, {
+            "schema": key[0],
+            "name": key[1],
+            "type": str(row["TABLE_TYPE"]),
+            "columns": [],
+        })
+        table["columns"].append({
+            "name": str(row["COLUMN_NAME"]),
+            "data_type": str(row["DATA_TYPE"]),
+            "nullable": str(row["IS_NULLABLE"]).upper() == "YES",
+        })
+
+    table_items = list(tables.values())
+    return {
+        "profile_id": profile_id,
+        "database": str(database_name or ""),
+        "schemas": sorted({item["schema"] for item in table_items}),
+        "tables": table_items,
+    }
 
 
 def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
