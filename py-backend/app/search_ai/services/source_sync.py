@@ -894,8 +894,10 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     documents: list[SearchDocument] = []
     for row in rows:
         raw_id = row.get("_document_id")
-        if raw_id is None:
-            continue
+        if raw_id is None or not str(raw_id).strip():
+            raise ValueError(
+                "Source contains a NULL or blank document ID; refusing to replace the existing index"
+            )
         fields: dict[str, str | int | float | bool | None] = {}
         title = ""
         for field in config.fields:
