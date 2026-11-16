@@ -262,7 +262,8 @@ export async function discoverPlatformSourceSchema(input: {
 }): Promise<PlatformSourceCatalog> {
   const params = new URLSearchParams();
   if (input.schema) params.set("schema", input.schema);
-  const query = params.size ? `?${params.toString()}` : "";
+  const queryString = params.toString();
+  const query = queryString ? `?${queryString}` : "";
   const response = await fetch(
     `${SEARCH_API_BASE}/api/admin/platform/sources/${encodeURIComponent(input.profileId)}/schema${query}`,
     { headers: { Accept: "application/json" } },
@@ -313,6 +314,7 @@ export interface PlatformSearchResponse {
   total_count: number;
   page: number;
   page_size: number;
+  config_version: number;
   index_version: number;
 }
 
@@ -416,6 +418,10 @@ export interface PlatformFeedbackItem {
   comment?: string | null;
   created_at_utc?: string | null;
   created_by?: string | null;
+  result_rank?: number | null;
+  result_score?: number | null;
+  config_version?: number | null;
+  index_version?: number | null;
 }
 
 export interface PlatformFeedbackSummary {
@@ -431,6 +437,10 @@ export async function recordPlatformFeedback(input: {
   documentId: string;
   isRelevant: boolean;
   comment?: string;
+  resultRank?: number;
+  resultScore?: number;
+  configVersion?: number;
+  indexVersion?: number;
 }): Promise<{ feedback_id: number; category_id: string; document_id: string; is_relevant: boolean }> {
   const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(input.categoryId)}/feedback`, {
     method: "POST",
@@ -440,6 +450,10 @@ export async function recordPlatformFeedback(input: {
       document_id: input.documentId,
       is_relevant: input.isRelevant,
       comment: input.comment?.trim() || null,
+      result_rank: input.resultRank ?? null,
+      result_score: input.resultScore ?? null,
+      config_version: input.configVersion ?? null,
+      index_version: input.indexVersion ?? null,
     }),
   });
   return readJson(response);
