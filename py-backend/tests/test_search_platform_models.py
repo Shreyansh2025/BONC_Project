@@ -608,6 +608,7 @@ class SearchPlatformModelTests(unittest.TestCase):
                     {"name": "PANNumber", "data_type": "nvarchar", "nullable": True},
                     {"name": "SSN", "data_type": "nvarchar", "nullable": True},
                     {"name": "Gender", "data_type": "nvarchar", "nullable": True},
+                    {"name": "Address1", "data_type": "nvarchar", "nullable": True},
                 ],
             }],
             "relationships": [],
@@ -619,7 +620,7 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(result["id_column_suggestion"]["column"], "PersonGuid")
         self.assertEqual(mapped_columns, {"FullName"})
         skipped_columns = {item["column"] for item in result["skipped_columns"]}
-        self.assertTrue({"PersonGuid", "CompanyId", "PANNumber", "SSN", "Gender"}.issubset(skipped_columns))
+        self.assertTrue({"PersonGuid", "CompanyId", "PANNumber", "SSN", "Gender", "Address1"}.issubset(skipped_columns))
 
     def test_source_discovery_uses_native_sql_server_foreign_key_column_ids(self):
         connection = MagicMock()
