@@ -379,7 +379,7 @@ def build_source_mapping_suggestions(
         suggestions.append({
             "key": "",
             "source_column": name,
-            "label": re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ").strip().title(),
+            "label": re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name.split("__")[-1]).replace("_", " ").strip().title(),
             "role": role,
             "weight": _ROLE_DEFAULTS[role][0],
             "searchable": True,
@@ -620,6 +620,42 @@ def generate_join_view_preview(
                 f"AS {_quote_identifier(alias_name)}"
             )
 
+    generated_display_names = 0
+    for table_key in included_in_order:
+        table_info = tables[table_key]
+        columns_by_name = {
+            _normalise_column_name(str(column["name"])): str(column["name"])
+            for column in table_info["columns"]
+        }
+        first_column = next(
+            (columns_by_name[name] for name in ("firstname", "givenname") if name in columns_by_name),
+            None,
+        )
+        last_column = next(
+            (columns_by_name[name] for name in ("lastname", "surname", "familyname") if name in columns_by_name),
+            None,
+        )
+        if not first_column or not last_column:
+            continue
+        first_ref = (
+            f"{_quote_identifier(aliases[table_key])}.{_quote_identifier(first_column)}"
+        )
+        last_ref = (
+            f"{_quote_identifier(aliases[table_key])}.{_quote_identifier(last_column)}"
+        )
+        first_value = f"NULLIF(LTRIM(RTRIM(CONVERT(NVARCHAR(4000), {first_ref}))), N'')"
+        last_value = f"NULLIF(LTRIM(RTRIM(CONVERT(NVARCHAR(4000), {last_ref}))), N'')"
+        display_expression = (
+            f"CONCAT({first_value}, "
+            f"CASE WHEN {first_value} IS NOT NULL AND {last_value} IS NOT NULL "
+            f"THEN N' ' ELSE N'' END, {last_value})"
+        )
+        display_alias = output_name(table_key, "DisplayName")
+        select_items.append(
+            f"{display_expression} AS {_quote_identifier(display_alias)}"
+        )
+        generated_display_names += 1
+
     from_clause = (
         f"FROM {_quote_identifier(base_schema)}.{_quote_identifier(base_table)} "
         f"AS {_quote_identifier(aliases[base_key])}"
@@ -662,6 +698,10 @@ def generate_join_view_preview(
             "This endpoint only generates SQL; it does not execute or create the view.",
             "The generated joins follow child-to-parent foreign keys so the base record remains the document grain.",
             "Sensitive/contact columns and unsupported data types are excluded from the default projection.",
+            *(
+                ["A DisplayName column was generated from first/last-name fields found on the same table."]
+                if generated_display_names else []
+            ),
             "Review the selected columns and permissions, then execute the script manually in the development database.",
         ],
     }
