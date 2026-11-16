@@ -122,12 +122,35 @@ class CategoryRules(StrictModel):
         return self
 
 
+class SearchSynonymGroup(StrictModel):
+    """Category-local alternatives that represent the same search concept."""
+
+    terms: list[str] = Field(min_length=2, max_length=12)
+
+    @field_validator("terms")
+    @classmethod
+    def clean_terms(cls, values: list[str]) -> list[str]:
+        cleaned = [item.strip().lower() for item in values if item and item.strip()]
+        if len(cleaned) < 2:
+            raise ValueError("A synonym group requires at least two non-empty terms")
+        normalised = [
+            " ".join(re.findall(r"[a-z0-9]+", item))
+            for item in cleaned
+        ]
+        if any(len(item.replace(" ", "")) < 2 for item in normalised):
+            raise ValueError("Synonyms must contain at least two letters or numbers")
+        if len(set(normalised)) != len(normalised):
+            raise ValueError("Synonym terms must be unique after normalization")
+        return cleaned
+
+
 class CategoryConfig(StrictModel):
     category_id: str = Field(min_length=2, max_length=64)
     display_name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     source: SourceConfig
     fields: list[SearchFieldConfig] = Field(min_length=1, max_length=30)
+    synonyms: list[SearchSynonymGroup] = Field(default_factory=list, max_length=100)
     rules: CategoryRules = Field(default_factory=CategoryRules)
     active: bool = True
     # Categories are private by default. Public endpoints must never expose
