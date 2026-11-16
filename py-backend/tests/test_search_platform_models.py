@@ -495,7 +495,7 @@ class SearchPlatformModelTests(unittest.TestCase):
         connection.execute.return_value.mappings.return_value.one.return_value = {
             "total_rows": 10,
             "non_null_ids": 8,
-            "blank_ids": 0,
+            "blank_ids": 1,
             "distinct_ids": 7,
         }
         engine = unittest.mock.MagicMock()
@@ -521,9 +521,10 @@ class SearchPlatformModelTests(unittest.TestCase):
 
         self.assertFalse(result["is_valid"])
         self.assertEqual(result["null_id_count"], 2)
-        self.assertEqual(result["duplicate_id_count"], 1)
+        self.assertEqual(result["blank_id_count"], 1)
+        self.assertEqual(result["duplicate_id_count"], 0)
         self.assertTrue(any("NULL" in warning for warning in result["warnings"]))
-        self.assertTrue(any("duplicate" in warning for warning in result["warnings"]))
+        self.assertTrue(any("empty or contain only whitespace" in warning for warning in result["warnings"]))
         query = connection.execute.call_args.args[0]
         self.assertIn("COUNT_BIG(DISTINCT CASE WHEN", query.text)
         self.assertIn("AS blank_ids", query.text)
