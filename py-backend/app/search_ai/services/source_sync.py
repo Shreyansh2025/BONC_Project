@@ -70,7 +70,7 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
     schema_clause = "AND tables_view.TABLE_SCHEMA = :schema_name" if schema else ""
     key_schema_clause = "AND tc.TABLE_SCHEMA = :schema_name" if schema else ""
     relationship_schema_clause = (
-        "WHERE fk.TABLE_SCHEMA = :schema_name OR referenced.TABLE_SCHEMA = :schema_name"
+        "WHERE parent_schema.name = :schema_name OR referenced_schema.name = :schema_name"
         if schema else ""
     )
     query = text(f"""
@@ -100,26 +100,33 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
     """)
     foreign_key_query = text(f"""
         SELECT
-            fk.CONSTRAINT_NAME,
-            fk.TABLE_SCHEMA AS FROM_SCHEMA,
-            fk.TABLE_NAME AS FROM_TABLE,
-            fk.COLUMN_NAME AS FROM_COLUMN,
-            referenced.TABLE_SCHEMA AS TO_SCHEMA,
-            referenced.TABLE_NAME AS TO_TABLE,
-            referenced.COLUMN_NAME AS TO_COLUMN,
-            fk.ORDINAL_POSITION
-        FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS rc
-        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS fk
-            ON rc.CONSTRAINT_CATALOG = fk.CONSTRAINT_CATALOG
-           AND rc.CONSTRAINT_SCHEMA = fk.CONSTRAINT_SCHEMA
-           AND rc.CONSTRAINT_NAME = fk.CONSTRAINT_NAME
-        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS referenced
-            ON rc.UNIQUE_CONSTRAINT_CATALOG = referenced.CONSTRAINT_CATALOG
-           AND rc.UNIQUE_CONSTRAINT_SCHEMA = referenced.CONSTRAINT_SCHEMA
-           AND rc.UNIQUE_CONSTRAINT_NAME = referenced.CONSTRAINT_NAME
-           AND fk.POSITION_IN_UNIQUE_CONSTRAINT = referenced.ORDINAL_POSITION
+            fk.name AS CONSTRAINT_NAME,
+            parent_schema.name AS FROM_SCHEMA,
+            parent_table.name AS FROM_TABLE,
+            parent_column.name AS FROM_COLUMN,
+            referenced_schema.name AS TO_SCHEMA,
+            referenced_table.name AS TO_TABLE,
+            referenced_column.name AS TO_COLUMN,
+            fkc.constraint_column_id AS ORDINAL_POSITION
+        FROM sys.foreign_keys AS fk
+        INNER JOIN sys.foreign_key_columns AS fkc
+            ON fk.object_id = fkc.constraint_object_id
+        INNER JOIN sys.tables AS parent_table
+            ON fkc.parent_object_id = parent_table.object_id
+        INNER JOIN sys.schemas AS parent_schema
+            ON parent_table.schema_id = parent_schema.schema_id
+        INNER JOIN sys.columns AS parent_column
+            ON parent_column.object_id = fkc.parent_object_id
+           AND parent_column.column_id = fkc.parent_column_id
+        INNER JOIN sys.tables AS referenced_table
+            ON fkc.referenced_object_id = referenced_table.object_id
+        INNER JOIN sys.schemas AS referenced_schema
+            ON referenced_table.schema_id = referenced_schema.schema_id
+        INNER JOIN sys.columns AS referenced_column
+            ON referenced_column.object_id = fkc.referenced_object_id
+           AND referenced_column.column_id = fkc.referenced_column_id
         {relationship_schema_clause}
-        ORDER BY fk.TABLE_SCHEMA, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fk.ORDINAL_POSITION
+        ORDER BY parent_schema.name, parent_table.name, fk.name, fkc.constraint_column_id
     """)
     parameters = {"schema_name": schema} if schema else {}
     try:
