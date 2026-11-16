@@ -293,6 +293,54 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(index.field_values["skills"], {"C", "C++", "C#"})
         self.assertNotIn("A", index.field_values["name"])
 
+    def test_exact_document_id_returns_result_without_content_field_match(self):
+        payload = people_config()
+        payload["rules"] = {
+            "lexical_enabled": True,
+            "semantic_enabled": False,
+            "semantic_min_score": 20,
+            "semantic_candidate_limit": 50,
+            "lexical_weight": 0.65,
+            "semantic_weight": 0.35,
+        }
+        config = CategoryConfig.model_validate(payload)
+        document = {
+            "document_id": "person-007",
+            "title": "Unrelated title",
+            "fields": {
+                "name": "Different Person",
+                "skills": "Python",
+                "bio": "Backend developer",
+                "location": "Indore",
+            },
+            "metadata": {},
+        }
+        category = {
+            "config": config,
+            "status": "active",
+            "config_version": 1,
+            "index_version": 1,
+        }
+        index = CategoryIndex(
+            version=1,
+            documents=[document],
+            vectors_index=None,
+            vocabulary=Counter({"different": 1, "person": 1, "python": 1}),
+            inverted_index={"different": {0}, "person": {0}, "python": {0}},
+            field_values={"name": {"Different Person"}, "skills": {"Python"}},
+            document_id_lookup={"person 007": {0}},
+        )
+        with (
+            patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
+            patch("app.search_ai.services.platform_search._get_category_index", return_value=index),
+        ):
+            result = search_category(query="person-007", category_id="people")
+
+        self.assertEqual([item["id"] for item in result["data"]], ["person-007"])
+        self.assertEqual(result["data"][0]["score"], 100.0)
+        self.assertTrue(result["data"][0]["exact_identifier_match"])
+        self.assertEqual(result["data"][0]["matched_fields"], ["document_id"])
+
     def test_synonym_group_expands_query_without_replacing_original_terms(self):
         payload = people_config()
         payload["synonyms"] = [{
