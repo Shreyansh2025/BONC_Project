@@ -289,6 +289,7 @@ def record_feedback(
 
 
 def get_feedback(category_id: str, *, limit: int = 100) -> dict[str, Any]:
+    get_category(category_id)
     if not 1 <= limit <= 500:
         raise ValueError("limit must be between 1 and 500")
     with get_engine().connect() as connection:
