@@ -195,6 +195,255 @@ def discover_source_schema(profile_id: str, schema: str | None = None) -> dict[s
         "relationships": relationships,
     }
 
+
+_SENSITIVE_COLUMN_NAMES = {
+    "password", "passwd", "pwd", "secret", "token", "accesstoken",
+    "refreshtoken", "credential", "credentials", "hash", "salt",
+    "aadhaar", "aadhar", "pan", "passport", "ssn", "socialsecuritynumber",
+    "bankaccount", "accountnumber", "creditcard", "cvv", "otp",
+    "privatekey", "email", "emailid", "phonenumber", "mobilenumber",
+    "mobile", "mobileno", "phone", "dateofbirth", "dob",
+}
+
+_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "title": (
+        "title", "name", "fullname", "displayname", "headline", "subject",
+        "productname", "companyname", "articletitle", "businessname",
+    ),
+    "skill": (
+        "skill", "skills", "expertise", "technology", "technologies",
+        "techstack", "stack", "keywords", "tags",
+    ),
+    "location": (
+        "location", "city", "state", "country", "region", "address",
+        "address1", "pincode", "postalcode",
+    ),
+    "category": (
+        "category", "categoryname", "type", "profession", "industry",
+        "articletype", "productcategory",
+    ),
+    "description": (
+        "description", "bio", "about", "summary", "content", "body",
+        "profiledescription", "tagline", "overview",
+    ),
+}
+
+_ROLE_DEFAULTS = {
+    "title": (5.0, ["name", "title"]),
+    "skill": (4.0, ["expertise", "technology"]),
+    "location": (1.5, ["city", "place"]),
+    "category": (2.0, ["type", "category"]),
+    "description": (2.0, ["about", "details"]),
+    "general": (1.0, []),
+}
+
+_SEARCHABLE_TYPES = {
+    "char", "nchar", "varchar", "nvarchar", "text", "ntext",
+    "uniqueidentifier", "int", "bigint", "smallint", "tinyint",
+    "decimal", "numeric", "float", "real", "money", "smallmoney",
+}
+
+
+def _normalise_column_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _field_key_from_column(column_name: str, used_keys: set[str]) -> str:
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", column_name).lower()
+    key = re.sub(r"[^a-z0-9_]", "_", snake).strip("_") or "field"
+    if not key[0].isalpha():
+        key = f"field_{key}"
+    base = key[:64]
+    key = base
+    suffix = 2
+    while key in used_keys:
+        ending = f"_{suffix}"
+        key = f"{base[:64 - len(ending)]}{ending}"
+        suffix += 1
+    used_keys.add(key)
+    return key
+
+
+def build_source_mapping_suggestions(
+    catalog: dict[str, Any],
+    *,
+    schema: str,
+    table: str,
+) -> dict[str, Any]:
+    """Build conservative field/ID mapping suggestions from discovered metadata.
+
+    This function never reads source row values. Sensitive/contact columns are
+    excluded by default, and soft-delete or active filters are never guessed.
+    """
+    selected = next(
+        (
+            item for item in catalog.get("tables", [])
+            if item.get("schema") == schema and item.get("name") == table
+        ),
+        None,
+    )
+    if selected is None:
+        raise ValueError("The selected table or view was not found in the discovered schema")
+
+    columns = selected.get("columns", [])
+    primary_keys = list(selected.get("primary_key_columns") or [])
+    primary_key_suggestion = None
+    if len(primary_keys) == 1:
+        primary_key_suggestion = {
+            "column": primary_keys[0],
+            "confidence": "high",
+            "reason": "Declared single-column primary key",
+        }
+    elif len(primary_keys) > 1:
+        primary_key_suggestion = {
+            "column": None,
+            "confidence": "none",
+            "reason": "Composite primary key detected; choose or construct a stable unique document ID",
+        }
+
+    if primary_key_suggestion is None:
+        id_candidates = [
+            str(column["name"])
+            for column in columns
+            if _normalise_column_name(str(column["name"])) in {
+                "id", "userid", "userrowid", "useruniqueid", "articleid",
+                "productid", "companyid", "documentid",
+            }
+        ]
+        if len(id_candidates) == 1:
+            primary_key_suggestion = {
+                "column": id_candidates[0],
+                "confidence": "medium",
+                "reason": "Column name strongly resembles a record identifier; uniqueness has not been verified",
+            }
+        else:
+            primary_key_suggestion = {
+                "column": None,
+                "confidence": "none",
+                "reason": "No unambiguous primary-key or record-ID candidate was found",
+            }
+
+    suggestions: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    used_keys: set[str] = set()
+    available_columns = [column for column in columns if str(column.get("data_type", "")).lower() in _SEARCHABLE_TYPES]
+
+    title_candidates: list[dict[str, Any]] = []
+    for column in available_columns:
+        name = str(column["name"])
+        normalized_name = _normalise_column_name(name)
+        if normalized_name in _SENSITIVE_COLUMN_NAMES or any(
+            normalized_name.endswith(sensitive) for sensitive in (
+                "password", "token", "secret", "hash", "salt", "aadhaar",
+                "aadhar", "passport", "phonenumber", "mobilenumber",
+            )
+        ):
+            skipped.append({"column": name, "reason": "Sensitive or contact field excluded from automatic mapping"})
+            continue
+        if normalized_name in {"id", "userid", "userrowid", "useruniqueid", "articleid", "productid", "companyid", "documentid"}:
+            skipped.append({"column": name, "reason": "Record identifier; used for document identity, not searchable content"})
+            continue
+        matching_roles = [
+            role for role, aliases in _ROLE_ALIASES.items()
+            if normalized_name in aliases
+        ]
+        role = matching_roles[0] if matching_roles else "general"
+        if role == "title":
+            title_candidates.append(column)
+        suggestions.append({
+            "key": "",
+            "source_column": name,
+            "label": re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ").strip().title(),
+            "role": role,
+            "weight": _ROLE_DEFAULTS[role][0],
+            "searchable": True,
+            "semantic": str(column.get("data_type", "")).lower() in {
+                "char", "nchar", "varchar", "nvarchar", "text", "ntext"
+            },
+            "aliases": list(_ROLE_DEFAULTS[role][1]),
+            "confidence": "high" if role != "general" else "low",
+            "reason": f"Column name matched the {role} field pattern" if role != "general" else "Unclassified searchable column; verify whether it adds useful search context",
+        })
+
+    # Keep one obvious title field. Additional name-like columns are retained
+    # as general searchable fields rather than creating conflicting title roles.
+    chosen_title = None
+    if title_candidates:
+        priority = {
+            "title": 0, "fullname": 1, "displayname": 2, "name": 3,
+            "productname": 4, "companyname": 5, "articletitle": 6,
+            "businessname": 7, "headline": 8, "subject": 9,
+        }
+        chosen_title = min(
+            title_candidates,
+            key=lambda item: priority.get(_normalise_column_name(str(item["name"])), 100),
+        )
+    elif suggestions:
+        chosen_title = next(
+            (
+                column for column in available_columns
+                if any(item["source_column"] == column["name"] for item in suggestions)
+            ),
+            None,
+        )
+
+    for item in suggestions:
+        item["key"] = _field_key_from_column(item["source_column"], used_keys)
+        if chosen_title is not None and item["source_column"] == chosen_title["name"]:
+            item["role"] = "title"
+            item["weight"] = _ROLE_DEFAULTS["title"][0]
+            item["confidence"] = "medium" if item["confidence"] == "low" else item["confidence"]
+            item["reason"] = (
+                "Selected as the primary display field based on its column name"
+                if item["confidence"] == "high"
+                else "Fallback title field; verify that it provides a useful display name"
+            )
+        elif item["role"] == "title":
+            item["role"] = "general"
+            item["weight"] = _ROLE_DEFAULTS["general"][0]
+            item["aliases"] = []
+            item["reason"] = "Additional name-like column; retained as a general searchable field"
+
+    if not suggestions:
+        raise ValueError("No safe searchable columns were found. Add a view with suitable text or identifier fields.")
+
+    warnings = [
+        "These are suggestions only. Review fields and document ID uniqueness before creating the engine.",
+        "No IsDeleted, IsActive or Status filters were enabled automatically; their valid values depend on the source data.",
+    ]
+    if primary_key_suggestion["column"] is None:
+        warnings.append(primary_key_suggestion["reason"])
+    if chosen_title is None:
+        warnings.append("No suitable title column was found; at least one suggested field must be assigned the title role.")
+
+    return {
+        "profile_id": catalog.get("profile_id"),
+        "database": catalog.get("database"),
+        "schema": schema,
+        "table": table,
+        "table_type": selected.get("type"),
+        "id_column_suggestion": primary_key_suggestion,
+        "fields": suggestions,
+        "skipped_columns": skipped,
+        "potential_filter_columns": [
+            str(column["name"])
+            for column in columns
+            if _normalise_column_name(str(column["name"])) in {"isactive", "isdeleted", "status", "enabled"}
+        ],
+        "warnings": warnings,
+    }
+
+
+def suggest_source_mapping(
+    profile_id: str,
+    *,
+    schema: str,
+    table: str,
+) -> dict[str, Any]:
+    """Discover the selected table and return administrator-reviewable mappings."""
+    catalog = discover_source_schema(profile_id, schema=schema)
+    return build_source_mapping_suggestions(catalog, schema=schema, table=table)
+
 def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     if not isinstance(config.source, SQLServerSourceConfig):
         raise ValueError("This category does not use a SQL Server source")
