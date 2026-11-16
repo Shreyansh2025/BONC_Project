@@ -104,7 +104,9 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
                 continue
             for raw_item in str(raw_value).split(","):
                 clean_item = raw_item.strip()
-                if len(_normalise(clean_item)) >= 2:
+                min_value_length = 1 if field.role == "skill" else 2
+                normalized_item = _normalise(clean_item).replace(" ", "")
+                if len(normalized_item) >= min_value_length:
                     values.add(clean_item)
         field_values[field.key] = values
 
