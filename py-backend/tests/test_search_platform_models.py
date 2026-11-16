@@ -232,5 +232,18 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertEqual(result["config_version"], 4)
         self.assertEqual(result["index_version"], 9)
 
+
+    def test_query_plan_recognises_plural_field_alias_without_substring_match(self):
+        config = CategoryConfig.model_validate(people_config())
+        interpreted = interpret_query(
+            "Python experts in Indore",
+            config,
+            field_values={"skills": {"Python"}, "location": {"Indore"}},
+        )
+        self.assertEqual(interpreted["matched_aliases"]["skills"], ["expert"])
+        self.assertEqual(interpreted["lexical_query"], "python in indore")
+        self.assertEqual(interpreted["matched_values"]["skills"], ["Python"])
+        self.assertEqual(interpreted["matched_values"]["location"], ["Indore"])
+
 if __name__ == "__main__":
     unittest.main()
