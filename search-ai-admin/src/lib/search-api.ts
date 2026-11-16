@@ -186,6 +186,10 @@ export interface PlatformFieldConfig {
   aliases: string[];
 }
 
+export interface PlatformSynonymGroup {
+  terms: string[];
+}
+
 export interface PlatformRulesConfig {
   lexical_enabled: boolean;
   semantic_enabled: boolean;
@@ -218,6 +222,7 @@ export interface PlatformCategoryConfig {
         filters: PlatformSourceFilter[];
       };
   fields: PlatformFieldConfig[];
+  synonyms?: PlatformSynonymGroup[];
   rules: PlatformRulesConfig;
   active: boolean;
   public_search_enabled: boolean;
