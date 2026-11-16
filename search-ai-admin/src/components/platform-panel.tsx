@@ -541,6 +541,9 @@ export default function PlatformPanel() {
                 <select value={sourceProfileId} onChange={(e) => {
                   setConnectionEnv(e.target.value ? "SEARCH_SOURCE_" + e.target.value : "");
                   setSourceCatalog(null);
+                  setMappingSuggestions(null);
+                  setSelectedJoinRelationships([]);
+                  setViewPreview(null);
                 }} required>
                   <option value="">Select a configured connection</option>
                   {sourceProfiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.profile_id}</option>)}
@@ -579,7 +582,11 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>Unique ID column</span>{sourceCatalog
                 ? <select value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required>
                     <option value="">Select unique ID column</option>
-                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.data_type}</option>)}
+                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>
+                      {column.name} · {column.data_type}
+                      {column.is_primary_key ? " · PK" : ""}
+                      {column.is_foreign_key ? " · FK" : ""}
+                    </option>)}
                   </select>
                 : <input value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required />}</label>
               <label className="setting-field"><span>Maximum records per sync</span><input type="number" min="1" max="100000" value={maxRecords} onChange={(e) => setMaxRecords(Number(e.target.value))} /></label>
@@ -656,7 +663,11 @@ export default function PlatformPanel() {
             {sourceFilters.map((filter, index) => <div className="platform-filter-row" key={index}>
               <label className="setting-field"><span>Column</span>{sourceCatalog
                 ? <select value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })}>
-                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>
+                      {column.name}
+                      {column.is_primary_key ? " · PK" : ""}
+                      {column.is_foreign_key ? " · FK" : ""}
+                    </option>)}
                   </select>
                 : <input value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })} />}</label>
               <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSourceFilter(index, { operator: e.target.value as PlatformSourceFilter["operator"], value: undefined, values: [] })}>
