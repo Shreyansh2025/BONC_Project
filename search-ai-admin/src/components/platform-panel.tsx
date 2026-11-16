@@ -13,6 +13,7 @@ import {
   type PlatformCategoryHistoryItem,
   type PlatformFieldConfig,
   type PlatformFieldRole,
+  type PlatformSourceFilter,
   type PlatformSearchResponse,
 } from "../lib/search-api";
 
@@ -61,6 +62,7 @@ export default function PlatformPanel() {
   const [table, setTable] = useState("Users");
   const [idColumn, setIdColumn] = useState("UserId");
   const [maxRecords, setMaxRecords] = useState(50000);
+  const [sourceFilters, setSourceFilters] = useState<PlatformSourceFilter[]>([]);
   const [publicEnabled, setPublicEnabled] = useState(false);
   const [fields, setFields] = useState<PlatformFieldConfig[]>(INITIAL_FIELDS);
   const [minScore, setMinScore] = useState(20);
@@ -131,6 +133,17 @@ export default function PlatformPanel() {
     setFields((current) => current.filter((_, i) => i !== index));
   };
 
+  const addSourceFilter = () => {
+    setSourceFilters((current) => [
+      ...current,
+      { column: "IsDeleted", operator: "eq", value: 0, values: [] },
+    ]);
+  };
+
+  const updateSourceFilter = (index: number, patch: Partial<PlatformSourceFilter>) => {
+    setSourceFilters((current) => current.map((filter, i) => i === index ? { ...filter, ...patch } : filter));
+  };
+
   const loadCategoryForEdit = (item: PlatformCategoryRecord) => {
     const config = item.config;
     setCategoryId(config.category_id);
@@ -143,6 +156,9 @@ export default function PlatformPanel() {
       setTable(config.source.table);
       setIdColumn(config.source.id_column);
       setMaxRecords(config.source.max_records);
+      setSourceFilters(config.source.filters.map((filter) => ({ ...filter, values: [...(filter.values || [])] })));
+    } else {
+      setSourceFilters([]);
     }
     setFields(config.fields.map((field) => ({ ...field, aliases: [...field.aliases] })));
     setMinScore(config.rules.semantic_min_score);
@@ -179,7 +195,7 @@ export default function PlatformPanel() {
               table: table.trim(),
               id_column: idColumn.trim(),
               max_records: maxRecords,
-              filters: [],
+              filters: sourceFilters,
             },
         fields,
         rules: {
@@ -314,6 +330,18 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>Maximum records per sync</span><input type="number" min="1" max="100000" value={maxRecords} onChange={(e) => setMaxRecords(Number(e.target.value))} /></label>
             </> : <p className="panel-intro wide">Create the category, then select it below to push normalized records using the ingestion JSON form.</p>}
           </div>
+
+          {sourceType === "sqlserver" && <div className="platform-source-filters">
+            <div className="settings-section-title"><div><h3>Source filters</h3><p>Optional safe filters applied while reading the configured table. Do not use this to bypass record permissions.</p></div><button type="button" className="secondary-button" onClick={addSourceFilter}>Add filter</button></div>
+            {sourceFilters.map((filter, index) => <div className="platform-filter-row" key={index}>
+              <label className="setting-field"><span>Column</span><input value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })} /></label>
+              <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSourceFilter(index, { operator: e.target.value as PlatformSourceFilter["operator"], value: undefined, values: [] })}>
+                <option value="eq">Equals</option><option value="ne">Not equal</option><option value="in">In list</option><option value="is_null">Is empty</option><option value="not_null">Is not empty</option>
+              </select></label>
+              {filter.operator === "eq" || filter.operator === "ne" ? <label className="setting-field"><span>Value</span><input value={String(filter.value ?? "")} onChange={(e) => updateSourceFilter(index, { value: e.target.value })} /></label> : filter.operator === "in" ? <label className="setting-field"><span>Values (comma separated)</span><input value={(filter.values || []).join(", ")} onChange={(e) => updateSourceFilter(index, { values: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></label> : <div className="setting-field"><span>Value</span><small>No value required</small></div>}
+              <button type="button" className="secondary-button danger-button" onClick={() => setSourceFilters((current) => current.filter((_, i) => i !== index))}>Remove</button>
+            </div>)}
+          </div>}
 
           <div className="settings-section-title"><div><h3>Field mapping and weights</h3><p>Map source columns into standard searchable fields. Higher weights make a field contribute more to lexical relevance.</p></div><button type="button" className="secondary-button" onClick={addField}>Add field</button></div>
           <div className="platform-fields">
