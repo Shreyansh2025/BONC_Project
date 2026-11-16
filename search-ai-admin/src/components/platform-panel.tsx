@@ -726,9 +726,28 @@ export default function PlatformPanel() {
                   type="checkbox"
                   checked={selectedJoinRelationships.includes(key)}
                   onChange={(e) => {
-                    setSelectedJoinRelationships((current) => e.target.checked
-                      ? [...current, key]
-                      : current.filter((item) => item !== key));
+                    if (e.target.checked) {
+                      setSelectedJoinRelationships((current) => [...current, key]);
+                    } else {
+                      const remaining = new Set(selectedJoinRelationships.filter((item) => item !== key));
+                      const reachable = new Set([schema + "." + table]);
+                      const retained = new Set<string>();
+                      let changed = true;
+                      while (changed) {
+                        changed = false;
+                        for (const candidate of sourceCatalog?.relationships || []) {
+                          const candidateKey = relationshipKey(candidate);
+                          const fromKey = candidate.from_schema + "." + candidate.from_table;
+                          const toKey = candidate.to_schema + "." + candidate.to_table;
+                          if (remaining.has(candidateKey) && reachable.has(fromKey) && !reachable.has(toKey)) {
+                            retained.add(candidateKey);
+                            reachable.add(toKey);
+                            changed = true;
+                          }
+                        }
+                      }
+                      setSelectedJoinRelationships(Array.from(retained));
+                    }
                     setViewPreview(null);
                   }}
                 />
@@ -795,7 +814,10 @@ export default function PlatformPanel() {
                 <option value="eq">Equals</option><option value="ne">Not equal</option><option value="in">In list</option><option value="is_null">Is empty</option><option value="not_null">Is not empty</option>
               </select></label>
               {filter.operator === "eq" || filter.operator === "ne" ? <label className="setting-field"><span>Value</span><input required value={String(filter.value ?? "")} onChange={(e) => updateSourceFilter(index, { value: e.target.value })} /></label> : filter.operator === "in" ? <label className="setting-field"><span>Values (comma separated)</span><input value={(filter.values || []).join(", ")} onChange={(e) => updateSourceFilter(index, { values: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} /></label> : <div className="setting-field"><span>Value</span><small>No value required</small></div>}
-              <button type="button" className="secondary-button danger-button" onClick={() => setSourceFilters((current) => current.filter((_, i) => i !== index))}>Remove</button>
+              <button type="button" className="secondary-button danger-button" onClick={() => {
+                setSourceValidation(null);
+                setSourceFilters((current) => current.filter((_, i) => i !== index));
+              }}>Remove</button>
             </div>)}
           </div>}
 
