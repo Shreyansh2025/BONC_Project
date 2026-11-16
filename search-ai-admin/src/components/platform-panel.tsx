@@ -808,7 +808,12 @@ export default function PlatformPanel() {
           <div className="platform-result-summary"><strong>{searchResult.total_count} results</strong><span>Index v{searchResult.index_version}</span></div>
           <div className="mini-panel"><div><strong>Query understanding & search plan</strong><p>{searchResult.query_plan.explanation}</p><p>{pretty(searchResult.query_plan)}</p></div></div>
           {searchResult.data.map((item) => <article className="platform-result-item" key={item.id}>
-            <div><strong>{item.title}</strong><small>{item.matched_fields.join(", ") || "Semantic match"}</small><pre>{pretty(item.fields)}</pre>
+            <div><strong>{item.title}</strong><small>
+              {item.exact_identifier_match
+                ? "Exact document ID match"
+                : (item.matched_fields.join(", ") || "Semantic match")}
+              {item.phrase_score ? " · phrase " + item.phrase_score.toFixed(1) : ""}
+            </small><pre>{pretty(item.fields)}</pre>
               <div className="platform-feedback-actions">
                 <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, true)}>{feedbackSaving === item.id + ":relevant" ? "Saving…" : "Relevant"}</button>
                 <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, false)}>{feedbackSaving === item.id + ":not-relevant" ? "Saving…" : "Not relevant"}</button>
