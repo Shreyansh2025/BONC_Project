@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ import numpy as np
 from app.search_ai.platform.models import CategoryConfig
 from app.search_ai.services import category_store
 from app.search_ai.services.embedding_model import EMBEDDING_DIM, get_model
+from app.search_ai.services.search_common import build_vocabulary, correct_query
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -24,6 +26,7 @@ class CategoryIndex:
     version: int
     documents: list[dict[str, Any]]
     vectors_index: faiss.Index | None
+    vocabulary: Counter
 
 
 _INDEXES: dict[str, CategoryIndex] = {}
@@ -85,7 +88,13 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
         vectors_index = faiss.IndexFlatIP(EMBEDDING_DIM)
         vectors_index.add(vectors)
 
-    built = CategoryIndex(version=version, documents=documents, vectors_index=vectors_index)
+    vocabulary = build_vocabulary(documents, lambda doc: _field_text(config, doc))
+    built = CategoryIndex(
+        version=version,
+        documents=documents,
+        vectors_index=vectors_index,
+        vocabulary=vocabulary,
+    )
     with _INDEX_LOCK:
         _INDEXES[category_id] = built
     return built
@@ -183,6 +192,10 @@ def search_category(
     index = _get_category_index(category)
     docs = index.documents
     understanding = _query_understanding(query, config, docs)
+    # Spell correction is learned from this category's own indexed vocabulary,
+    # so a person's name or a specialist term is not corrected using the
+    # Product catalog's vocabulary.
+    lexical_query = correct_query(_normalise(query), index.vocabulary)
     scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
@@ -198,7 +211,7 @@ def search_category(
 
     for position, document in enumerate(docs):
         lexical_score, matched_fields = (
-            _lexical_score(query, config, document) if config.rules.lexical_enabled else (0.0, [])
+            _lexical_score(lexical_query, config, document) if config.rules.lexical_enabled else (0.0, [])
         )
         semantic_score = semantic_scores.get(position, 0.0)
         if semantic_score < config.rules.semantic_min_score:
@@ -235,6 +248,7 @@ def search_category(
         "query": query,
         "category": category_id,
         "query_understanding": understanding,
+        "corrected_query": lexical_query,
         "data": scored[offset: offset + page_size],
         "total_count": total,
         "page": page,
