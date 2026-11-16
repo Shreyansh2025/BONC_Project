@@ -8,7 +8,12 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
-from app.search_ai.platform.models import CategoryConfig, SQLServerSourceConfig, SearchDocument
+from app.search_ai.platform.models import (
+    CategoryConfig,
+    SQLServerSourceConfig,
+    SQLSourceFilter,
+    SearchDocument,
+)
 from app.search_ai.services.category_store import replace_documents
 
 
@@ -708,6 +713,130 @@ def generate_join_view_preview(
         ],
     }
 
+def _build_filter_clause(
+    filters: list[SQLSourceFilter],
+) -> tuple[str, dict[str, Any]]:
+    """Build parameterized source filters shared by validation and sync."""
+    where_clauses: list[str] = []
+    parameters: dict[str, Any] = {}
+    for filter_index, source_filter in enumerate(filters):
+        column = _quote_identifier(source_filter.column)
+        operator = source_filter.operator
+        if operator in {"eq", "ne"}:
+            parameter = f"filter_{filter_index}"
+            symbol = "=" if operator == "eq" else "<>"
+            where_clauses.append(f"{column} {symbol} :{parameter}")
+            parameters[parameter] = source_filter.value
+        elif operator == "in":
+            names: list[str] = []
+            for value_index, value in enumerate(source_filter.values):
+                parameter = f"filter_{filter_index}_{value_index}"
+                names.append(f":{parameter}")
+                parameters[parameter] = value
+            where_clauses.append(f"{column} IN ({', '.join(names)})")
+        elif operator == "is_null":
+            where_clauses.append(f"{column} IS NULL")
+        elif operator == "not_null":
+            where_clauses.append(f"{column} IS NOT NULL")
+    where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    return where_sql, parameters
+
+
+def validate_sqlserver_source(
+    profile_id: str,
+    *,
+    schema: str,
+    table: str,
+    id_column: str,
+    filters: list[SQLSourceFilter],
+    max_records: int = 50000,
+) -> dict[str, Any]:
+    """Check the selected source and verify document-ID completeness and uniqueness."""
+    catalog = discover_source_schema(profile_id, schema=schema)
+    selected = next(
+        (
+            item for item in catalog["tables"]
+            if item["schema"] == schema and item["name"] == table
+        ),
+        None,
+    )
+    if selected is None:
+        raise ValueError("The selected source table or view was not found")
+    column_types = {
+        str(column["name"]): str(column["data_type"]).lower()
+        for column in selected["columns"]
+    }
+    if id_column not in column_types:
+        raise ValueError("The selected document ID column does not exist on this source")
+    if _is_sensitive_column_name(id_column):
+        raise ValueError("A sensitive or contact field cannot be used as the search document ID")
+    unsupported_distinct_types = {"text", "ntext", "image", "xml", "sql_variant"}
+    if column_types[id_column] in unsupported_distinct_types:
+        raise ValueError("The selected document ID data type cannot be checked for uniqueness; choose a comparable ID column")
+
+    for source_filter in filters:
+        if source_filter.column not in column_types:
+            raise ValueError(
+                f"Filter column '{source_filter.column}' does not exist on the selected source"
+            )
+
+    qualified_table = (
+        f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+    )
+    id_identifier = _quote_identifier(id_column)
+    where_sql, parameters = _build_filter_clause(filters)
+    query = text(
+        "SELECT COUNT_BIG(*) AS total_rows, "
+        f"COUNT_BIG({id_identifier}) AS non_null_ids, "
+        f"COUNT_BIG(DISTINCT {id_identifier}) AS distinct_ids "
+        f"FROM {qualified_table}{where_sql}"
+    )
+
+    engine = _engine_from_environment_name(f"SEARCH_SOURCE_{profile_id}")
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(query, parameters).mappings().one()
+    finally:
+        engine.dispose()
+
+    total_rows = int(row["total_rows"] or 0)
+    non_null_ids = int(row["non_null_ids"] or 0)
+    distinct_ids = int(row["distinct_ids"] or 0)
+    null_ids = total_rows - non_null_ids
+    duplicate_ids = non_null_ids - distinct_ids
+    warnings: list[str] = []
+    if total_rows == 0:
+        warnings.append("The configured filters returned no rows.")
+    if null_ids:
+        warnings.append(f"{null_ids} source rows have a NULL document ID.")
+    if duplicate_ids:
+        warnings.append(f"{duplicate_ids} duplicate document IDs were found.")
+    if total_rows > max_records:
+        warnings.append(
+            f"The source has {total_rows} matching rows; sync is capped at {max_records} records."
+        )
+    if selected["type"] == "VIEW":
+        warnings.append(
+            "The source is a view; ensure its document ID remains unique after all joins."
+        )
+
+    return {
+        "profile_id": profile_id,
+        "database": catalog["database"],
+        "schema": schema,
+        "table": table,
+        "id_column": id_column,
+        "total_rows": total_rows,
+        "non_null_ids": non_null_ids,
+        "distinct_ids": distinct_ids,
+        "null_id_count": null_ids,
+        "duplicate_id_count": duplicate_ids,
+        "max_records": max_records,
+        "is_valid": total_rows > 0 and null_ids == 0 and duplicate_ids == 0,
+        "warnings": warnings,
+    }
+
+
 def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     if not isinstance(config.source, SQLServerSourceConfig):
         raise ValueError("This category does not use a SQL Server source")
@@ -724,31 +853,9 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     )
     qualified_table = f"{_quote_identifier(source.schema)}.{_quote_identifier(source.table)}"
 
-    # Values are always bound parameters. Only validated identifiers are
-    # interpolated into SQL, so dashboard users cannot submit raw SQL.
-    where_clauses: list[str] = []
-    parameters: dict[str, Any] = {"row_limit": source.max_records}
-    for filter_index, source_filter in enumerate(source.filters):
-        column = _quote_identifier(source_filter.column)
-        operator = source_filter.operator
-        if operator in {"eq", "ne"}:
-            parameter = f"filter_{filter_index}"
-            symbol = "=" if operator == "eq" else "<>"
-            where_clauses.append(f"{column} {symbol} :{parameter}")
-            parameters[parameter] = source_filter.value
-        elif operator == "in":
-            names = []
-            for value_index, value in enumerate(source_filter.values):
-                parameter = f"filter_{filter_index}_{value_index}"
-                names.append(f":{parameter}")
-                parameters[parameter] = value
-            where_clauses.append(f"{column} IN ({', '.join(names)})")
-        elif operator == "is_null":
-            where_clauses.append(f"{column} IS NULL")
-        elif operator == "not_null":
-            where_clauses.append(f"{column} IS NOT NULL")
-
-    where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    # Values are bound parameters; only validated identifiers are interpolated.
+    where_sql, parameters = _build_filter_clause(source.filters)
+    parameters["row_limit"] = source.max_records
     query = text(
         f"SELECT TOP (:row_limit) {', '.join(selected)} "
         f"FROM {qualified_table}{where_sql} "
