@@ -319,3 +319,20 @@ export async function runPlatformAdminSearch(input: {
   });
   return readJson<PlatformSearchResponse>(response);
 }
+
+
+export async function updatePlatformCategory(input: {
+  categoryId: string;
+  expectedVersion: number;
+  config: PlatformCategoryConfig;
+}): Promise<PlatformCategoryRecord> {
+  const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/categories/${encodeURIComponent(input.categoryId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      expected_version: input.expectedVersion,
+      config: input.config,
+    }),
+  });
+  return readJson<PlatformCategoryRecord>(response);
+}
