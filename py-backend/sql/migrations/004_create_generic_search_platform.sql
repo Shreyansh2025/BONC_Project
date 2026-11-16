@@ -8,6 +8,13 @@
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
+-- Staging-only while this platform is being validated. Create a separately
+-- reviewed production migration after staging acceptance.
+IF DB_NAME() <> N'RN_BoncNetwork_Staging'
+BEGIN
+    THROW 51004, 'Safety stop: migration 004 is intended for RN_BoncNetwork_Staging only.', 1;
+END;
+
 IF SCHEMA_ID(N'searchai') IS NULL
 BEGIN
     EXECUTE (N'CREATE SCHEMA [searchai] AUTHORIZATION [dbo];');
