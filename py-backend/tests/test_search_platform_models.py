@@ -371,11 +371,15 @@ class SearchPlatformModelTests(unittest.TestCase):
             patch("app.search_ai.services.platform_search._get_category_index", return_value=index),
         ):
             result = search_category(query="person-007", category_id="people")
+            punctuation_variant = search_category(query="person 007", category_id="people")
+            case_variant = search_category(query="PERSON-007", category_id="people")
 
         self.assertEqual([item["id"] for item in result["data"]], ["person-007"])
         self.assertEqual(result["data"][0]["score"], 100.0)
         self.assertTrue(result["data"][0]["exact_identifier_match"])
         self.assertEqual(result["data"][0]["matched_fields"], ["document_id"])
+        self.assertTrue(all(not item["exact_identifier_match"] for item in punctuation_variant["data"]))
+        self.assertTrue(all(not item["exact_identifier_match"] for item in case_variant["data"]))
 
     def test_synonym_group_expands_query_without_replacing_original_terms(self):
         payload = people_config()
