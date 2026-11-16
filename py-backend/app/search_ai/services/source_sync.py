@@ -383,10 +383,13 @@ def build_source_mapping_suggestions(
             key=lambda item: priority.get(_normalise_column_name(str(item["name"]).split("__")[-1]), 100),
         )
     elif suggestions:
+        text_types = {"char", "nchar", "varchar", "nvarchar", "text", "ntext"}
+        suggested_columns = {item["source_column"] for item in suggestions}
         chosen_title = next(
             (
                 column for column in available_columns
-                if any(item["source_column"] == column["name"] for item in suggestions)
+                if str(column.get("data_type", "")).lower() in text_types
+                and str(column["name"]) in suggested_columns
             ),
             None,
         )
