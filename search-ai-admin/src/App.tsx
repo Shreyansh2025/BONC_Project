@@ -239,7 +239,7 @@ export default function App() {
   const serviceReady = readiness?.status === "ready";
   const totalCount = searchData?.TotalCount ?? 0;
   const results = searchData?.Data ?? [];
-  const pageTitle = activeTab === "settings" ? "Search rules" : activeTab === "platform" ? "Search platform" : activeTab === "indexes" ? "Index status" : "Search Playground";
+  const pageTitle = activeTab === "settings" ? "Search rules" : activeTab === "platform" ? "Search engines" : activeTab === "indexes" ? "Index status" : "Search Playground";
 
   return (
     <div className="app-shell">
@@ -251,7 +251,7 @@ export default function App() {
         <div className="sidebar-label">WORKSPACE</div>
         <button className={`nav-item ${activeTab === "playground" ? "active" : ""}`} onClick={() => setActiveTab("playground")}><span className="nav-icon">⌕</span><span>Search Playground</span></button>
         <button className={`nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}><span className="nav-icon">⚙</span><span>Search rules</span></button>
-        <button className={`nav-item ${activeTab === "platform" ? "active" : ""}`} onClick={() => setActiveTab("platform")}><span className="nav-icon">▦</span><span>Categories</span><span className="soon">New</span></button>
+        <button className={`nav-item ${activeTab === "platform" ? "active" : ""}`} onClick={() => setActiveTab("platform")}><span className="nav-icon">▦</span><span>Search engines</span><span className="soon">New</span></button>
         <button className="nav-item disabled" disabled title="Feedback collection is not implemented yet"><span className="nav-icon">✦</span><span>Feedback</span><span className="soon">Later</span></button>
         <button className={`nav-item ${activeTab === "indexes" ? "active" : ""}`} onClick={() => setActiveTab("indexes")}><span className="nav-icon">▤</span><span>Index status</span></button>
         <div className="sidebar-bottom">
