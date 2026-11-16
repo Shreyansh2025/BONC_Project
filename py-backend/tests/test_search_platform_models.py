@@ -1,11 +1,14 @@
 """Validation tests for generic search category configuration."""
 import unittest
+from collections import Counter
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from app.search_ai.platform.models import CategoryConfig, PlatformSearchRequest
 from app.search_ai.services.platform_search import _lexical_score, _query_understanding, _contains_phrase
 from app.search_ai.services.query_understanding import interpret_query
+from app.search_ai.services.platform_search import CategoryIndex, search_category
 
 
 def people_config():
@@ -171,6 +174,63 @@ class SearchPlatformModelTests(unittest.TestCase):
         )
         self.assertNotIn("skills", interpreted["matched_aliases"])
         self.assertEqual(interpreted["lexical_query"], "expertly written python article")
+
+
+    def test_search_uses_query_plan_for_lexical_query_without_hard_filtering(self):
+        config = CategoryConfig.model_validate(people_config())
+        documents = [{
+            "document_id": "person-1",
+            "title": "Shreyansh",
+            "fields": {
+                "name": "Shreyansh",
+                "skills": "Python, OCR",
+                "bio": "Document processing developer",
+                "location": "Indore",
+            },
+            "metadata": {},
+        }]
+        category = {
+            "config": config,
+            "status": "active",
+            "config_version": 4,
+            "index_version": 9,
+        }
+        index = CategoryIndex(
+            version=9,
+            documents=documents,
+            vectors_index=None,
+            vocabulary=Counter({"shreyansh": 1, "python": 1, "ocr": 1, "indore": 1}),
+            inverted_index={
+                "shreyansh": {0},
+                "python": {0},
+                "ocr": {0},
+                "indore": {0},
+            },
+            field_values={
+                "name": {"Shreyansh"},
+                "skills": {"Python", "OCR"},
+                "bio": {"Document processing developer"},
+                "location": {"Indore"},
+            },
+        )
+        with (
+            patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
+            patch("app.search_ai.services.platform_search._get_category_index", return_value=index),
+        ):
+            result = search_category(
+                query="Find Python expertise in Indore",
+                category_id="people",
+            )
+
+        self.assertEqual(result["corrected_query"], "find python in indore")
+        self.assertEqual(result["query_plan"]["query_type"], "field_guided")
+        self.assertEqual(result["query_plan"]["matched_aliases"]["skills"], ["expertise"])
+        self.assertEqual(result["query_plan"]["matched_values"]["skills"], ["Python"])
+        self.assertEqual(result["query_plan"]["matched_values"]["location"], ["Indore"])
+        self.assertFalse(result["query_plan"]["filters_applied"])
+        self.assertEqual([item["id"] for item in result["data"]], ["person-1"])
+        self.assertEqual(result["config_version"], 4)
+        self.assertEqual(result["index_version"], 9)
 
 if __name__ == "__main__":
     unittest.main()
