@@ -22,6 +22,25 @@ class CategoryUpdateRequest(BaseModel):
     change_reason: str | None = Field(default=None, max_length=1000)
 
 
+class SourceJoinSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    constraint_name: str = Field(min_length=1, max_length=128)
+    from_schema: str = Field(min_length=1, max_length=128)
+    from_table: str = Field(min_length=1, max_length=128)
+    to_schema: str = Field(min_length=1, max_length=128)
+    to_table: str = Field(min_length=1, max_length=128)
+
+
+class JoinViewPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_schema: str = Field(min_length=1, max_length=128)
+    base_table: str = Field(min_length=1, max_length=128)
+    base_id_column: str = Field(min_length=1, max_length=128)
+    view_schema: str = Field(min_length=1, max_length=128)
+    view_name: str = Field(min_length=1, max_length=128)
+    selected_relationships: list[SourceJoinSelection] = Field(min_length=1, max_length=10)
+
+
 def _require_admin(authorization: str | None) -> str:
     expected = os.getenv("SEARCH_ADMIN_API_TOKEN", "").strip()
     if not expected:
@@ -147,6 +166,38 @@ def admin_suggest_source_mapping(
         raise HTTPException(
             status_code=502,
             detail="Unable to generate source mapping suggestions. Check source metadata permissions.",
+        ) from exc
+
+
+@admin_router.post("/sources/{profile_id}/join-view-preview")
+def admin_preview_join_view(
+    profile_id: str,
+    body: JoinViewPreviewRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Generate a reviewable SQL view script without executing database DDL."""
+    _require_admin(authorization)
+    try:
+        return source_sync.generate_join_view_preview(
+            profile_id,
+            base_schema=body.base_schema,
+            base_table=body.base_table,
+            base_id_column=body.base_id_column,
+            view_schema=body.view_schema,
+            view_name=body.view_name,
+            selected_relationships=[
+                relationship.model_dump()
+                for relationship in body.selected_relationships
+            ],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to generate the view preview from this database schema.",
         ) from exc
 
 
