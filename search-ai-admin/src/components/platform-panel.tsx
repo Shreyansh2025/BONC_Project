@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   createPlatformCategory,
+  discoverPlatformSourceSchema,
+  getPlatformSourceProfiles,
   getPlatformCategories,
   getPlatformCategoryHistory,
   getPlatformFeedback,
@@ -18,6 +20,8 @@ import {
   type PlatformFieldRole,
   type PlatformSourceFilter,
   type PlatformSearchResponse,
+  type PlatformSourceProfile,
+  type PlatformSourceCatalog,
 } from "../lib/search-api";
 
 const ROLE_OPTIONS: PlatformFieldRole[] = ["title", "skill", "location", "category", "description", "general"];
@@ -60,7 +64,10 @@ export default function PlatformPanel() {
   const [displayName, setDisplayName] = useState("People");
   const [description, setDescription] = useState("Search BONC people profiles");
   const [sourceType, setSourceType] = useState<"sqlserver" | "push">("sqlserver");
-  const [connectionEnv, setConnectionEnv] = useState("SEARCH_SOURCE_PEOPLE");
+  const [connectionEnv, setConnectionEnv] = useState("");
+  const [sourceProfiles, setSourceProfiles] = useState<PlatformSourceProfile[]>([]);
+  const [sourceCatalog, setSourceCatalog] = useState<PlatformSourceCatalog | null>(null);
+  const [discoveringSource, setDiscoveringSource] = useState(false);
   const [schema, setSchema] = useState("dbo");
   const [table, setTable] = useState("Users");
   const [idColumn, setIdColumn] = useState("UserId");
@@ -103,10 +110,27 @@ export default function PlatformPanel() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    void getPlatformSourceProfiles().then((profiles) => {
+      setSourceProfiles(profiles);
+      setConnectionEnv((current) => current || (profiles[0] ? "SEARCH_SOURCE_" + profiles[0].profile_id : ""));
+    }).catch(() => setSourceProfiles([]));
+  }, []);
+
   const selectedRecord = useMemo(
     () => categories.find((item) => item.config.category_id === selectedCategory) ?? null,
     [categories, selectedCategory],
   );
+
+  const sourceProfileId = connectionEnv.startsWith("SEARCH_SOURCE_")
+    ? connectionEnv.slice("SEARCH_SOURCE_".length)
+    : "";
+  const sourceTables = useMemo(
+    () => sourceCatalog?.tables.filter((item) => item.schema === schema) ?? [],
+    [sourceCatalog, schema],
+  );
+  const selectedSourceTable = sourceTables.find((item) => item.name === table) ?? null;
+  const sourceColumns = selectedSourceTable?.columns ?? [];
 
   const loadHistory = async (id: string) => {
     try {
@@ -185,6 +209,7 @@ export default function PlatformPanel() {
     setDisplayName(config.display_name);
     setDescription(config.description || "");
     setSourceType(config.source.type);
+    setSourceCatalog(null);
     if (config.source.type === "sqlserver") {
       setConnectionEnv(config.source.connection_env);
       setSchema(config.source.schema);
@@ -210,6 +235,39 @@ export default function PlatformPanel() {
     setSearchResult(null);
     setNotice("Editing " + config.display_name + ". Save changes to create a new configuration version.");
     setError("");
+  };
+
+  const discoverSource = async () => {
+    if (!sourceProfileId) {
+      setError("Select a configured SQL connection profile first.");
+      return;
+    }
+    setDiscoveringSource(true);
+    setError("");
+    setNotice("");
+    try {
+      const catalog = await discoverPlatformSourceSchema({ profileId: sourceProfileId });
+      setSourceCatalog(catalog);
+      const nextSchema = catalog.schemas.includes(schema) ? schema : (catalog.schemas[0] || "dbo");
+      const tables = catalog.tables.filter((item) => item.schema === nextSchema);
+      const selected = tables.find((item) => item.name === table) ?? tables[0];
+      setSchema(nextSchema);
+      if (selected) {
+        setTable(selected.name);
+        setIdColumn((current) => selected.columns.some((column) => column.name === current)
+          ? current
+          : (selected.columns.find((column) => /id$/i.test(column.name))?.name || selected.columns[0]?.name || ""));
+      } else {
+        setTable("");
+        setIdColumn("");
+      }
+      setNotice("Connected to profile " + sourceProfileId + " (" + catalog.database + "). Discovered " + catalog.tables.length.toLocaleString() + " tables/views.");
+    } catch (e) {
+      setSourceCatalog(null);
+      setError(getError(e, "Unable to inspect the configured SQL source."));
+    } finally {
+      setDiscoveringSource(false);
+    }
   };
 
   const createCategory = async (event: FormEvent<HTMLFormElement>) => {
@@ -360,18 +418,55 @@ export default function PlatformPanel() {
           <div className="platform-form-grid">
             <label className="setting-field"><span>Source type</span><select value={sourceType} onChange={(e) => setSourceType(e.target.value as "sqlserver" | "push")}><option value="sqlserver">SQL Server table</option><option value="push">Application pushes records</option></select></label>
             {sourceType === "sqlserver" ? <>
-              <label className="setting-field"><span>Connection env variable</span><input value={connectionEnv} onChange={(e) => setConnectionEnv(e.target.value.toUpperCase())} pattern="SEARCH_SOURCE_[A-Z0-9_]{1,80}" /></label>
-              <label className="setting-field"><span>Schema</span><input value={schema} onChange={(e) => setSchema(e.target.value)} required /></label>
-              <label className="setting-field"><span>Table</span><input value={table} onChange={(e) => setTable(e.target.value)} required /></label>
-              <label className="setting-field"><span>Primary key column</span><input value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required /></label>
+              <label className="setting-field"><span>Reusable SQL connection</span>
+                <select value={sourceProfileId} onChange={(e) => {
+                  setConnectionEnv(e.target.value ? "SEARCH_SOURCE_" + e.target.value : "");
+                  setSourceCatalog(null);
+                }} required>
+                  <option value="">Select a configured connection</option>
+                  {sourceProfiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.profile_id}</option>)}
+                  {sourceProfileId && !sourceProfiles.some((profile) => profile.profile_id === sourceProfileId) && <option value={sourceProfileId}>{sourceProfileId} (not currently discoverable)</option>}
+                </select>
+                <small>Connection credentials remain on the server. Profiles are reusable across search engines.</small>
+              </label>
+              <div className="setting-field">
+                <span>Connection discovery</span>
+                <button type="button" className="secondary-button" onClick={() => void discoverSource()} disabled={!sourceProfileId || discoveringSource}>{discoveringSource ? "Connecting…" : "Test connection & discover tables"}</button>
+                {sourceProfiles.length === 0 && <small>No SQL connection profiles are registered. A platform operator must configure a server-side SEARCH_SOURCE_ profile once; never paste credentials here.</small>}
+              </div>
+              <label className="setting-field"><span>Schema</span>{sourceCatalog
+                ? <select value={schema} onChange={(e) => { setSchema(e.target.value); setTable(""); setIdColumn(""); }}>
+                    {sourceCatalog.schemas.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                : <input value={schema} onChange={(e) => setSchema(e.target.value)} required />}</label>
+              <label className="setting-field"><span>Table / view</span>{sourceCatalog
+                ? <select value={table} onChange={(e) => {
+                    const nextTable = sourceTables.find((item) => item.name === e.target.value);
+                    setTable(e.target.value);
+                    setIdColumn(nextTable?.columns.find((column) => /id$/i.test(column.name))?.name || nextTable?.columns[0]?.name || "");
+                  }} required>
+                    <option value="">Select table or view</option>
+                    {sourceTables.map((item) => <option key={item.name} value={item.name}>{item.name} ({item.type === "VIEW" ? "view" : "table"})</option>)}
+                  </select>
+                : <input value={table} onChange={(e) => setTable(e.target.value)} required />}</label>
+              <label className="setting-field"><span>Unique ID column</span>{sourceCatalog
+                ? <select value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required>
+                    <option value="">Select unique ID column</option>
+                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.data_type}</option>)}
+                  </select>
+                : <input value={idColumn} onChange={(e) => setIdColumn(e.target.value)} required />}</label>
               <label className="setting-field"><span>Maximum records per sync</span><input type="number" min="1" max="100000" value={maxRecords} onChange={(e) => setMaxRecords(Number(e.target.value))} /></label>
-            </> : <p className="panel-intro wide">Create the category, then select it below to push normalized records using the ingestion JSON form.</p>}
+            </> : <p className="panel-intro wide">Create the engine, then select it below to push normalized records using the ingestion form.</p>}
           </div>
 
           {sourceType === "sqlserver" && <div className="platform-source-filters">
             <div className="settings-section-title"><div><h3>Source filters</h3><p>Optional safe filters applied while reading the configured table. Do not use this to bypass record permissions.</p></div><button type="button" className="secondary-button" onClick={addSourceFilter}>Add filter</button></div>
             {sourceFilters.map((filter, index) => <div className="platform-filter-row" key={index}>
-              <label className="setting-field"><span>Column</span><input value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })} /></label>
+              <label className="setting-field"><span>Column</span>{sourceCatalog
+                ? <select value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })}>
+                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+                  </select>
+                : <input value={filter.column} onChange={(e) => updateSourceFilter(index, { column: e.target.value })} />}</label>
               <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSourceFilter(index, { operator: e.target.value as PlatformSourceFilter["operator"], value: undefined, values: [] })}>
                 <option value="eq">Equals</option><option value="ne">Not equal</option><option value="in">In list</option><option value="is_null">Is empty</option><option value="not_null">Is not empty</option>
               </select></label>
@@ -384,7 +479,12 @@ export default function PlatformPanel() {
           <div className="platform-fields">
             {fields.map((field, index) => <div className="platform-field-row" key={index}>
               <label className="setting-field"><span>Field key</span><input value={field.key} onChange={(e) => updateField(index, { key: e.target.value })} required /></label>
-              <label className="setting-field"><span>Source column</span><input value={field.source_column} onChange={(e) => updateField(index, { source_column: e.target.value })} required /></label>
+              <label className="setting-field"><span>Source column</span>{sourceCatalog
+                ? <select value={field.source_column} onChange={(e) => updateField(index, { source_column: e.target.value })} required>
+                    {!sourceColumns.some((column) => column.name === field.source_column) && <option value={field.source_column}>{field.source_column} (not in selected table)</option>}
+                    {sourceColumns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.data_type}</option>)}
+                  </select>
+                : <input value={field.source_column} onChange={(e) => updateField(index, { source_column: e.target.value })} required />}</label>
               <label className="setting-field"><span>Label</span><input value={field.label} onChange={(e) => updateField(index, { label: e.target.value })} required /></label>
               <label className="setting-field"><span>Role</span><select value={field.role} onChange={(e) => updateField(index, { role: e.target.value as PlatformFieldRole })}>{ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
               <label className="setting-field"><span>Weight</span><input type="number" min="0" max="100" step="0.5" value={field.weight} onChange={(e) => updateField(index, { weight: Number(e.target.value) })} /></label>
@@ -406,14 +506,15 @@ export default function PlatformPanel() {
             <label className="platform-checkbox"><input type="checkbox" checked={publicEnabled} onChange={(e) => setPublicEnabled(e.target.checked)} /> Allow public search (only enable for approved non-sensitive data)</label>
             <label className="setting-field wide"><span>Change reason</span><input value={changeReason} onChange={(e) => setChangeReason(e.target.value)} maxLength={1000} placeholder="Why are you creating or changing this category?" /></label>
           </div>
-          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0}>{saving ? "Saving…" : editingVersion === null ? "Create search engine" : "Save engine changes"}</button>
+          <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={saving || fields.length === 0 || (sourceType === "sqlserver" && !connectionEnv)}>{saving ? "Saving…" : editingVersion === null ? "Create search engine" : "Save engine changes"}</button>
             {editingVersion !== null && <button type="button" className="secondary-button" onClick={() => {
               setEditingVersion(null);
               setCategoryId("people");
               setDisplayName("People");
               setDescription("Search BONC people profiles");
               setSourceType("sqlserver");
-              setConnectionEnv("SEARCH_SOURCE_PEOPLE");
+              setConnectionEnv(sourceProfiles[0] ? "SEARCH_SOURCE_" + sourceProfiles[0].profile_id : "");
+               setSourceCatalog(null);
               setSchema("dbo");
               setTable("Users");
               setIdColumn("UserId");
