@@ -134,7 +134,7 @@ class SearchSynonymGroup(StrictModel):
         if len(cleaned) < 2:
             raise ValueError("A synonym group requires at least two non-empty terms")
         normalised = [
-            " ".join(re.findall(r"[a-z0-9]+", item))
+            " ".join(re.findall(r"[a-z0-9]+(?:[+#]+)?", item))
             for item in cleaned
         ]
         if any(len(item.replace(" ", "")) < 2 for item in normalised):
