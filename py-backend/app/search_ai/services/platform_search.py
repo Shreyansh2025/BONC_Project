@@ -175,7 +175,7 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
             if raw_value is None:
                 continue
             for clean_item in split_field_values(raw_value):
-                min_value_length = 1 if field.role == "skill" or field.data_type in {"integer", "number"} else 2
+                min_value_length = 1 if field.role == "skill" or field.data_type in {"integer", "number", "boolean"} else 2
                 normalized_item = _normalise(clean_item).replace(" ", "")
                 if len(normalized_item) >= min_value_length:
                     values.add(clean_item)
