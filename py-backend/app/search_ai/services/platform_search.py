@@ -336,14 +336,17 @@ def _coerce_filter_value(value: Any, data_type: str) -> Any:
             numeric = Decimal(str(value).strip())
         except (InvalidOperation, ValueError):
             raise ValueError(f"Expected an integer filter value, received {value!r}") from None
-        if numeric != numeric.to_integral_value():
-            raise ValueError(f"Expected an integer filter value, received {value!r}")
+        if not numeric.is_finite() or numeric != numeric.to_integral_value():
+            raise ValueError(f"Expected a finite integer filter value, received {value!r}")
         return int(numeric)
     if data_type == "number":
         try:
-            return Decimal(str(value).strip())
+            numeric = Decimal(str(value).strip())
+            if not numeric.is_finite():
+                raise InvalidOperation
+            return numeric
         except (InvalidOperation, ValueError):
-            raise ValueError(f"Expected a numeric filter value, received {value!r}") from None
+            raise ValueError(f"Expected a finite numeric filter value, received {value!r}") from None
     if data_type == "boolean":
         parsed = _parse_boolean(value)
         if parsed is None:
