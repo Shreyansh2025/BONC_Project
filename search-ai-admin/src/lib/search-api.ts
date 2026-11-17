@@ -184,6 +184,10 @@ export interface PlatformFieldConfig {
   searchable: boolean;
   semantic: boolean;
   aliases: string[];
+  filterable?: boolean;
+  data_type?: "text" | "keyword" | "integer" | "number" | "boolean" | "date";
+  query_filter_mode?: "none" | "preferred" | "required";
+  query_match?: "any" | "all";
 }
 
 export interface PlatformSynonymGroup {
@@ -457,7 +461,15 @@ export interface PlatformQueryConstraint {
   role: PlatformFieldRole;
   values: string[];
   match: "exact_index_value";
-  applied_as: "ranking_hint_only";
+  query_match?: "any" | "all";
+  applied_as: "ranking_hint_only" | "hard_filter";
+}
+
+export interface PlatformSearchFilter {
+  field: string;
+  operator: "eq" | "ne" | "in" | "contains" | "gte" | "lte" | "between" | "is_null" | "not_null";
+  value?: string | number | boolean | null;
+  values?: Array<string | number | boolean>;
 }
 
 export interface PlatformQueryPlan {
@@ -471,6 +483,10 @@ export interface PlatformQueryPlan {
   synonym_expansions: Array<{ matched_term: string; alternatives: string[] }>;
   semantic_query: string;
   filters_applied: boolean;
+  automatic_filters?: PlatformQueryConstraint[];
+  explicit_filters?: PlatformSearchFilter[];
+  filtered_document_count?: number;
+  eligible_document_count?: number;
   explanation: string;
 }
 
@@ -549,6 +565,7 @@ export async function runPlatformAdminSearch(input: {
   category: string;
   page?: number;
   pageSize?: number;
+  filters?: PlatformSearchFilter[];
 }): Promise<PlatformSearchResponse> {
   const response = await fetch(`${SEARCH_API_BASE}/api/admin/platform/search`, {
     method: "POST",
@@ -558,6 +575,7 @@ export async function runPlatformAdminSearch(input: {
       category: input.category,
       page: input.page ?? 1,
       page_size: input.pageSize ?? 10,
+      filters: input.filters ?? [],
     }),
   });
   return readJson<PlatformSearchResponse>(response);
