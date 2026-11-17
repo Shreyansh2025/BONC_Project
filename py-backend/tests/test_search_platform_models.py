@@ -157,6 +157,7 @@ class SearchPlatformModelTests(unittest.TestCase):
                     "role": "location",
                     "values": ["Indore"],
                     "match": "exact_index_value",
+                    "query_match": "all",
                     "applied_as": "ranking_hint_only",
                 },
             ],
