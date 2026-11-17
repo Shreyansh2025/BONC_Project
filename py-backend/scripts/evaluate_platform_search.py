@@ -16,6 +16,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+# Allow direct execution as `python scripts/evaluate_platform_search.py` from py-backend.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 from app.search_ai.services.search_evaluation import evaluate_ranking
 
 
