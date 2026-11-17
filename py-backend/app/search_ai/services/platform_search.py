@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from collections import Counter
 from dataclasses import dataclass, field
@@ -356,7 +356,10 @@ def _coerce_filter_value(value: Any, data_type: str) -> Any:
             if isinstance(value, date):
                 return datetime.combine(value, datetime.min.time())
             text_value = str(value).strip().replace("Z", "+00:00")
-            return datetime.fromisoformat(text_value)
+            parsed = datetime.fromisoformat(text_value)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
         except (TypeError, ValueError):
             raise ValueError(f"Expected an ISO date or datetime filter value, received {value!r}") from None
     return _normalise(value)
@@ -435,6 +438,13 @@ def _document_matches_filter(document: dict[str, Any], field: Any, item: dict[st
         return any(
             _compare_filter_value(actual, candidate, field.data_type, "eq")
             for actual in values for candidate in expected
+        )
+    if operator == "ne":
+        # For multi-value fields, "not equal" means no stored value may equal
+        # the excluded value. Any-different-value semantics would be misleading.
+        return bool(values) and not any(
+            _compare_filter_value(actual, item.get("value"), field.data_type, "eq")
+            for actual in values
         )
     if operator == "between":
         low, high = item["values"]
