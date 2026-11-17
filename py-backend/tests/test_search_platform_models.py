@@ -149,6 +149,7 @@ class SearchPlatformModelTests(unittest.TestCase):
                     "role": "skill",
                     "values": ["Python"],
                     "match": "exact_index_value",
+                    "query_match": "all",
                     "applied_as": "ranking_hint_only",
                 },
                 {
