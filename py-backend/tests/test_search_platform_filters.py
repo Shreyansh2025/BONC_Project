@@ -283,6 +283,33 @@ class PlatformResultFilterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "explicit numeric or date filters"):
             CategoryConfig.model_validate(payload)
 
+    def test_lexical_scores_are_not_diluted_when_semantic_vectors_are_unavailable(self):
+        payload = config_payload()
+        payload["rules"]["semantic_enabled"] = True
+        payload["rules"]["semantic_weight"] = 0.35
+        config = CategoryConfig.model_validate(payload)
+        documents = sample_documents()
+        index = category_index(config, documents)
+        category = {
+            "config": config,
+            "status": "active",
+            "config_version": 1,
+            "index_version": 1,
+        }
+        with (
+            patch("app.search_ai.services.platform_search._INDEXES", {}),
+            patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
+            patch("app.search_ai.services.platform_search._get_category_index", return_value=index),
+        ):
+            result = search_category(query="backend developer", category_id="jobs")
+
+        self.assertTrue(result["data"])
+        self.assertAlmostEqual(
+            result["data"][0]["score"],
+            result["data"][0]["lexical_score"],
+            places=2,
+        )
+
     def test_required_skill_and_city_values_are_applied_as_hard_filters(self):
         understanding = interpret_query(
             "backend developer Python SQL Noida",
