@@ -35,6 +35,11 @@ class SearchFieldConfig(StrictModel):
     def validate_filter_settings(self) -> "SearchFieldConfig":
         if self.query_filter_mode != "none" and not self.filterable:
             raise ValueError("query_filter_mode requires filterable=true")
+        if self.query_filter_mode == "required" and self.data_type in {"integer", "number", "date"}:
+            raise ValueError(
+                "Automatic required query filters are only supported for text, keyword, and boolean fields; "
+                "use explicit numeric or date filters for ranges"
+            )
         return self
 
     @field_validator("key")
