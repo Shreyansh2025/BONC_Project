@@ -221,6 +221,7 @@ class PlatformSourceMappingFilterSuggestionTests(unittest.TestCase):
                     {"name": "ExperienceMin", "data_type": "bigint", "nullable": True},
                     {"name": "IsRemote", "data_type": "bit", "nullable": True},
                     {"name": "ApplicationDeadline", "data_type": "datetime2", "nullable": True},
+                    {"name": "Status", "data_type": "nvarchar", "nullable": True},
                 ],
             }],
             "relationships": [],
@@ -240,6 +241,9 @@ class PlatformSourceMappingFilterSuggestionTests(unittest.TestCase):
         self.assertFalse(fields["IsRemote"]["searchable"])
         self.assertEqual(fields["ApplicationDeadline"]["data_type"], "date")
         self.assertFalse(fields["ApplicationDeadline"]["searchable"])
+        self.assertEqual(fields["Status"]["role"], "category")
+        self.assertTrue(fields["Status"]["filterable"])
+        self.assertEqual(fields["Status"]["data_type"], "keyword")
 
 
 class PlatformResultFilterTests(unittest.TestCase):
