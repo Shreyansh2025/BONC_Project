@@ -198,6 +198,7 @@ export interface PlatformRulesConfig {
   lexical_enabled: boolean;
   semantic_enabled: boolean;
   semantic_min_score: number;
+  semantic_high_confidence_score?: number;
   semantic_candidate_limit: number;
   lexical_weight: number;
   semantic_weight: number;
@@ -487,6 +488,9 @@ export interface PlatformQueryPlan {
   explicit_filters?: PlatformSearchFilter[];
   filtered_document_count?: number;
   eligible_document_count?: number;
+  semantic_high_confidence_score?: number;
+  semantic_candidates_kept?: number;
+  semantic_candidates_rejected?: number;
   explanation: string;
 }
 
