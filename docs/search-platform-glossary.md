@@ -281,3 +281,71 @@ The system refuses to replace the existing snapshot when preflight fails or the 
 | Results change after a configuration save | Check the configuration version and whether the field weights, search settings or filter behaviour changed. |
 
 For formal comparison, use the Search Platform Evaluation Guide and the evaluation script rather than judging only by one or two example queries.
+
+## 11. More words you may see in Admin and search diagnostics
+
+| Term | Plain-language meaning |
+|---|---|
+| **API** | Application Programming Interface. A defined way for one software system to ask another system to do something or return information. |
+| **Endpoint** | A particular API address for one action, such as searching a category or validating a database source. |
+| **Query** | The words and conditions entered by the person searching. |
+| **Query plan** | The platform's explanation of how it interpreted a query and which matching/filtering steps it applied. It is diagnostic information, not a separate search result. |
+| **Free-text query** | A query where no configured field alias or exact indexed field value was recognized. The full wording is treated as a general search. |
+| **Field-guided query** | A query where the system recognized at least one configured field alias or exact indexed value, such as a skill or city. |
+| **Matched alias** | A word recognized as another name for a field. Example: “expertise” is an alias for Skills. |
+| **Matched value** | A value found in the category's indexed records and recognized in the query. Example: “Indore” is an indexed City value. |
+| **Unmatched token** | A meaningful word in the query that was not recognized as a configured alias or exact indexed value. It can still help normal search. |
+| **Corrected query** | The query text after the platform applies any permitted spelling corrections to residual words. Exact indexed values are protected. |
+| **Expanded query / synonym expansion** | Extra alternative words added from a category's synonym settings. Example: a configured “developer” synonym group can add “programmer” as an alternative. |
+| **Hard filter** | A must-have condition. Records that do not satisfy it are removed before ranking. |
+| **Ranking hint** | A helpful clue that can improve a record's position without removing other records. |
+| **Eligible document count** | Number of indexed records left after required automatic filters and explicit result filters are applied. |
+| **Filtered document count** | Number of indexed records excluded by those filters. |
+| **Candidate** | A possible matching record retrieved by one of the search methods before the final results are ordered. |
+| **Token** | A word or searchable piece of a query. Search may split text into tokens to find matching records. |
+| **Inverted index** | A lookup structure that helps the platform quickly find which records contain a word. Think of it as the index at the back of a book. |
+| **Embedding** | A numerical representation of text that helps the computer compare meaning, not just identical words. |
+| **Vector** | The list of numbers used to represent an embedding. Similar vectors indicate text that may have similar meaning. |
+| **FAISS** | A software library used by this platform to search through vectors efficiently. It is part of the meaning-based search implementation. |
+| **Model** | The text-understanding component that creates embeddings. The current generic search uses the configured sentence-transformers embedding model; it is not automatically trained from Admin feedback. |
+| **Preflight warning** | A problem or risk found during source validation that should be reviewed before syncing. |
+| **Primary key** | A database column, or group of columns, that identifies a row in its own table. It is often a good starting point for a document ID, after validation. |
+| **Foreign key** | A database link from a row in one table to a related row in another table. |
+| **Relationship** | The defined connection between tables, usually described through foreign keys. |
+| **Join** | A database operation that brings related information from two or more tables together. |
+| **Left join** | A join that keeps every row from the selected starting table, even when there is no matching row in the related table. |
+| **One-to-many relationship** | One row on one side can be connected to many rows on the other side. Joining it carelessly can duplicate search documents. |
+| **Many-to-one relationship** | Many rows can refer to one row in another table. This is often safer when enriching one base record with parent information. |
+| **Base table** | The table whose row represents one search document in a generated join-view preview. |
+| **View** | A saved database query that behaves like a table when read. A view can combine selected columns from several tables. |
+
+## 12. Relative field-weight starting examples
+
+The examples below are deliberately relative. They are not preconfigured category values and should be confirmed with evaluation queries.
+
+| Category | Field | Example starting weight |
+|---|---|---:|
+| People | Name | 5 |
+| People | Skills | 4 |
+| People | Location | 3 |
+| People | Biography | 1 |
+| Jobs | Job title | 5 |
+| Jobs | Required skills | 4 |
+| Jobs | Location | 3 |
+| Jobs | Description | 1 |
+| Articles | Article title | 5 |
+| Articles | Tags / topic | 4 |
+| Articles | Summary | 3 |
+| Articles | Full body | 1 |
+
+A field's weight should reflect how important that information is when deciding whether a record answers the query. It should not simply be set higher because the field contains more text.
+
+### A few validation rules to remember
+
+- At least one field must be Searchable and every category must have a Title-role field.
+- Field keys and source columns must be unique within a category.
+- At least one of Lexical search or Semantic search must be enabled.
+- If a search method is enabled, its weight must be greater than zero. Do not set an enabled method's weight to zero; disable that method instead.
+- A Required automatic query filter cannot be configured for integer, number or date fields. Use explicit typed range filters for those fields.
+- A query can contain both automatic constraints and explicit filters. Across different required fields and explicit filters, all conditions must be satisfied.
+- A source document ID must be present, non-blank and unique in the selected source rows before synchronization.
