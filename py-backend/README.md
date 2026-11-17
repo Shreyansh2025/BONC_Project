@@ -104,3 +104,14 @@ scripts/                    # Data import scripts
 The old `app.routes.*`, `app.utils.*`, `app.db`, `app.logger`, `app.config`, and
 `app.models` import paths are retained as compatibility shims so the combined
 app and existing tests can continue to work while service code is organized by domain.
+
+## Search platform quick references
+
+For the configurable People, Jobs, Articles and other category-based search engines:
+
+- [Search Platform Glossary](../docs/search-platform-glossary.md) — plain-language explanations of field settings, weights, filters, ranking and source configuration, including ranges, defaults and guidance on choosing values.
+- [Search Platform Evaluation Guide](../docs/search-platform-evaluation-guide.md) — how to prepare reviewed test queries and measure search relevance.
+- Evaluation case template: `evaluation/search-cases.template.json`.
+- Evaluation runner: `scripts/evaluate_platform_search.py`.
+
+Run the evaluation commands from this `py-backend` directory. Keep your populated `evaluation/search-cases.json` and generated reports local; the evaluation folder's `.gitignore` excludes them from Git.
