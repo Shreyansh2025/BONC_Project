@@ -171,13 +171,14 @@ def run_benchmark(
     base_url: str,
     token: str,
     k: int,
+    timeout: float = 30.0,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 
     for case in cases:
         try:
-            response = call_search(base_url, token, case, k=k)
+            response = call_search(base_url, token, case, k=k, timeout=timeout)
             retrieved_ids = [
                 str(item["id"]) for item in response["data"]
                 if isinstance(item, dict) and item.get("id") is not None
@@ -281,9 +282,8 @@ def main() -> int:
             base_url=args.base_url.strip(),
             token=token,
             k=k,
+            timeout=args.timeout,
         )
-        # Apply the caller-selected timeout at the request layer via the CLI default.
-        # The default 30-second timeout is intentionally conservative for local model loading.
         print(f"Completed {report['successful_case_count']}/{report['request_count']} case(s); {report['error_count']} error(s).")
         summary = report["overall"]
         print(
