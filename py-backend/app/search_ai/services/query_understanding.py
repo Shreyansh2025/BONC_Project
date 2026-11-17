@@ -187,7 +187,13 @@ def interpret_query(
         values = matched_values.get(field.key, [])
         if not values:
             continue
-        hard_filter = bool(field.filterable and field.query_filter_mode == "required")
+        # Numeric/date phrases need explicit operators (for example >= or a
+        # date range); an exact mention must not be misread as an equality filter.
+        hard_filter = bool(
+            field.filterable
+            and field.query_filter_mode == "required"
+            and field.data_type in {"text", "keyword", "boolean"}
+        )
         constraints.append({
             "field": field.key,
             "role": field.role,
