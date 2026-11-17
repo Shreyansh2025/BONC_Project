@@ -918,10 +918,12 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
     # Values are bound parameters; only validated identifiers are interpolated.
     where_sql, parameters = _build_filter_clause(source.filters)
     parameters["row_limit"] = source.max_records
+    # Source row order has no meaning for the search index. Avoid a full
+    # sort here: on wide SQL Server views it can request a large memory grant
+    # and stall an otherwise small snapshot sync.
     query = text(
         f"SELECT TOP (:row_limit) {', '.join(selected)} "
-        f"FROM {qualified_table}{where_sql} "
-        "ORDER BY [_document_id]"
+        f"FROM {qualified_table}{where_sql}"
     )
 
     engine = _source_engine(source)
