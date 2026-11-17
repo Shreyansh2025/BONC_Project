@@ -24,6 +24,7 @@ from app.search_ai.services.platform_search import (
     search_category,
 )
 from app.search_ai.services.query_understanding import interpret_query
+from app.search_ai.services.source_sync import build_source_mapping_suggestions
 
 
 def config_payload():
@@ -200,6 +201,45 @@ def category_index(config, documents):
         inverted_index=inverted,
         field_values=values,
     )
+
+
+class PlatformSourceMappingFilterSuggestionTests(unittest.TestCase):
+    def test_mapping_suggests_filter_types_for_skill_location_and_typed_columns(self):
+        catalog = {
+            "profile_id": "JOBS",
+            "database": "BONC_Dev",
+            "tables": [{
+                "schema": "dbo",
+                "name": "Jobs",
+                "type": "BASE TABLE",
+                "primary_key_columns": ["JobId"],
+                "columns": [
+                    {"name": "JobId", "data_type": "int", "nullable": False, "is_primary_key": True},
+                    {"name": "Title", "data_type": "nvarchar", "nullable": False},
+                    {"name": "KeySkills", "data_type": "nvarchar", "nullable": True},
+                    {"name": "City", "data_type": "nvarchar", "nullable": True},
+                    {"name": "ExperienceMin", "data_type": "bigint", "nullable": True},
+                    {"name": "IsRemote", "data_type": "bit", "nullable": True},
+                    {"name": "ApplicationDeadline", "data_type": "datetime2", "nullable": True},
+                ],
+            }],
+            "relationships": [],
+        }
+        result = build_source_mapping_suggestions(catalog, schema="dbo", table="Jobs")
+        fields = {item["source_column"]: item for item in result["fields"]}
+
+        self.assertEqual(fields["KeySkills"]["role"], "skill")
+        self.assertTrue(fields["KeySkills"]["filterable"])
+        self.assertEqual(fields["KeySkills"]["data_type"], "keyword")
+        self.assertEqual(fields["KeySkills"]["query_filter_mode"], "preferred")
+        self.assertTrue(fields["City"]["filterable"])
+        self.assertEqual(fields["City"]["data_type"], "keyword")
+        self.assertEqual(fields["ExperienceMin"]["data_type"], "integer")
+        self.assertTrue(fields["ExperienceMin"]["filterable"])
+        self.assertEqual(fields["IsRemote"]["data_type"], "boolean")
+        self.assertFalse(fields["IsRemote"]["searchable"])
+        self.assertEqual(fields["ApplicationDeadline"]["data_type"], "date")
+        self.assertFalse(fields["ApplicationDeadline"]["searchable"])
 
 
 class PlatformResultFilterTests(unittest.TestCase):
