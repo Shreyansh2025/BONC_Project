@@ -45,6 +45,7 @@ const DEFAULT_RULES = {
   lexical_enabled: true,
   semantic_enabled: true,
   semantic_min_score: 20,
+  semantic_high_confidence_score: 75,
   semantic_candidate_limit: 50,
   lexical_weight: 0.65,
   semantic_weight: 0.35,
@@ -101,6 +102,7 @@ export default function PlatformPanel() {
   const [fields, setFields] = useState<PlatformFieldConfig[]>(INITIAL_FIELDS);
   const [synonymText, setSynonymText] = useState("");
   const [minScore, setMinScore] = useState(20);
+  const [highConfidenceScore, setHighConfidenceScore] = useState(75);
   const [lexicalWeight, setLexicalWeight] = useState(0.65);
   const [semanticWeight, setSemanticWeight] = useState(0.35);
   const [lexicalEnabled, setLexicalEnabled] = useState(true);
@@ -317,6 +319,7 @@ export default function PlatformPanel() {
     setFields(config.fields.map((field) => ({ ...field, aliases: [...field.aliases] })));
     setSynonymText((config.synonyms || []).map((group) => group.terms.join(", ")).join("\n"));
     setMinScore(config.rules.semantic_min_score);
+    setHighConfidenceScore(config.rules.semantic_high_confidence_score ?? 75);
     setLexicalWeight(config.rules.lexical_weight);
     setSemanticWeight(config.rules.semantic_weight);
     setLexicalEnabled(config.rules.lexical_enabled);
@@ -518,6 +521,7 @@ export default function PlatformPanel() {
           lexical_enabled: lexicalEnabled,
           semantic_enabled: semanticEnabled,
           semantic_min_score: minScore,
+          semantic_high_confidence_score: highConfidenceScore,
           semantic_candidate_limit: candidateLimit,
           lexical_weight: lexicalWeight,
           semantic_weight: semanticWeight,
@@ -937,6 +941,7 @@ export default function PlatformPanel() {
           <div className="settings-section-title"><div><h3>Search rules</h3><p>These are runtime ranking configurations, not model fine-tuning.</p></div></div>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Minimum semantic score</span><input type="number" min="0" max="100" step="0.5" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} /></label>
+            <label className="setting-field"><span>High-confidence semantic bypass</span><input type="number" min="0" max="100" step="0.5" value={highConfidenceScore} onChange={(e) => setHighConfidenceScore(Number(e.target.value))} /><small>Semantic matches below this score need at least one meaningful query word in common.</small></label>
             <label className="setting-field"><span>Semantic candidate limit</span><input type="number" min="1" max="200" value={candidateLimit} onChange={(e) => setCandidateLimit(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Lexical weight</span><input type="number" min="0" max="1" step="0.05" value={lexicalWeight} onChange={(e) => setLexicalWeight(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Semantic weight</span><input type="number" min="0" max="1" step="0.05" value={semanticWeight} onChange={(e) => setSemanticWeight(Number(e.target.value))} /></label>
@@ -962,6 +967,7 @@ export default function PlatformPanel() {
               setFields(INITIAL_FIELDS);
               setSynonymText("");
               setMinScore(20);
+              setHighConfidenceScore(75);
               setLexicalWeight(0.65);
               setSemanticWeight(0.35);
               setLexicalEnabled(true);
