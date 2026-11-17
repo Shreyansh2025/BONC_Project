@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.search_ai.platform.models import CategoryConfig
 from app.search_ai.routes.platform import admin_router, router
 from app.search_ai.services import category_store, platform_search, source_sync
 
@@ -44,7 +45,12 @@ class GenericSearchPlatformApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_public_search_rejects_private_category(self):
-        with patch.object(category_store, "get_category", return_value=self.category):
+        # The store returns a validated CategoryConfig, not a raw dictionary.
+        stored = {
+            **self.category,
+            "config": CategoryConfig.model_validate(self.category["config"]),
+        }
+        with patch.object(category_store, "get_category", return_value=stored):
             response = self.client.post(
                 "/api/platform/search",
                 json={"query": "Shreyansh OCR expert", "category": "people"},
