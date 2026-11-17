@@ -36,9 +36,9 @@ const ROLE_OPTIONS: PlatformFieldRole[] = ["title", "skill", "location", "catego
 
 const INITIAL_FIELDS: PlatformFieldConfig[] = [
   { key: "name", source_column: "FullName", label: "Name", role: "title", weight: 5, searchable: true, semantic: true, aliases: ["person", "user"] },
-  { key: "skills", source_column: "Skills", label: "Skills", role: "skill", weight: 4, searchable: true, semantic: true, aliases: ["expertise", "technology"] },
+  { key: "skills", source_column: "Skills", label: "Skills", role: "skill", weight: 4, searchable: true, semantic: true, aliases: ["expertise", "technology"], filterable: true, data_type: "keyword", query_filter_mode: "preferred", query_match: "all" },
   { key: "bio", source_column: "Bio", label: "Biography", role: "description", weight: 2, searchable: true, semantic: true, aliases: ["about", "experience"] },
-  { key: "location", source_column: "City", label: "Location", role: "location", weight: 1, searchable: true, semantic: true, aliases: ["city", "place"] },
+  { key: "location", source_column: "City", label: "Location", role: "location", weight: 1, searchable: true, semantic: true, aliases: ["city", "place"], filterable: true, data_type: "keyword", query_filter_mode: "preferred", query_match: "all" },
 ];
 
 const DEFAULT_RULES = {
@@ -316,7 +316,17 @@ export default function PlatformPanel() {
     } else {
       setSourceFilters([]);
     }
-    setFields(config.fields.map((field) => ({ ...field, aliases: [...field.aliases] })));
+    setFields(config.fields.map((field) => {
+      const discreteField = ["skill", "location", "category"].includes(field.role);
+      return {
+        ...field,
+        aliases: [...field.aliases],
+        filterable: field.filterable ?? discreteField,
+        data_type: field.data_type ?? (discreteField ? "keyword" : "text"),
+        query_filter_mode: field.query_filter_mode ?? (discreteField ? "preferred" : "none"),
+        query_match: field.query_match ?? "all",
+      };
+    }));
     setSynonymText((config.synonyms || []).map((group) => group.terms.join(", ")).join("\n"));
     setMinScore(config.rules.semantic_min_score);
     setHighConfidenceScore(config.rules.semantic_high_confidence_score ?? 75);
