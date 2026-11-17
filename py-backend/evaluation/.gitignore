@@ -1,0 +1,5 @@
+# Local benchmark cases may contain private record IDs or query text.
+search-cases.json
+
+# Generated reports may contain private queries and record IDs.
+reports/
