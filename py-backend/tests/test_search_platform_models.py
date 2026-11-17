@@ -430,6 +430,73 @@ class SearchPlatformModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "only one group"):
             CategoryConfig.model_validate(payload)
 
+    def test_search_candidate_retrieval_keeps_c_cpp_csharp_distinct(self):
+        payload = people_config()
+        payload["rules"] = {
+            "lexical_enabled": True,
+            "semantic_enabled": False,
+            "semantic_min_score": 20,
+            "semantic_candidate_limit": 50,
+            "lexical_weight": 1.0,
+            "semantic_weight": 0.0,
+        }
+        config = CategoryConfig.model_validate(payload)
+        documents = [
+            {
+                "document_id": "person-c",
+                "title": "Person C",
+                "fields": {
+                    "name": "Person C",
+                    "skills": "C",
+                    "bio": "Systems developer",
+                    "location": "Indore",
+                },
+                "metadata": {},
+            },
+            {
+                "document_id": "person-cpp",
+                "title": "Person C++",
+                "fields": {
+                    "name": "Person C++",
+                    "skills": "C++",
+                    "bio": "Systems developer",
+                    "location": "Indore",
+                },
+                "metadata": {},
+            },
+            {
+                "document_id": "person-csharp",
+                "title": "Person C#",
+                "fields": {
+                    "name": "Person C#",
+                    "skills": "C#",
+                    "bio": "Systems developer",
+                    "location": "Indore",
+                },
+                "metadata": {},
+            },
+        ]
+        category = {
+            "config": config,
+            "status": "active",
+            "config_version": 1,
+            "index_version": 1,
+        }
+
+        with (
+            patch("app.search_ai.services.platform_search._INDEXES", {}),
+            patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
+            patch("app.search_ai.services.platform_search.category_store.list_documents", return_value=documents),
+        ):
+            c_results = search_category(query="C", category_id="people")
+            cpp_results = search_category(query="C++", category_id="people")
+            csharp_results = search_category(query="C#", category_id="people")
+
+        self.assertEqual([item["id"] for item in c_results["data"]], ["person-c"])
+        self.assertEqual([item["id"] for item in cpp_results["data"]], ["person-cpp"])
+        self.assertEqual([item["id"] for item in csharp_results["data"]], ["person-csharp"])
+
+
     def test_query_understanding_distinguishes_c_cplusplus_and_csharp(self):
         config = CategoryConfig.model_validate(people_config())
         values = {"skills": {"C", "C++", "C#"}, "name": set(), "bio": set(), "location": set()}
