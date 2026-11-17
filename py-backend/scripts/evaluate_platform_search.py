@@ -160,8 +160,16 @@ def summarize(rows: list[dict[str, Any]], *, k: int) -> dict[str, Any]:
             sum(1 for row in rows if row.get("returned_count", 0) == 0) / count
             if count else 0.0
         ),
+        "unexpected_zero_result_count": sum(
+            1 for row in metric_rows if row.get("returned_count", 0) == 0
+        ),
+        "unexpected_zero_result_rate": (
+            sum(1 for row in metric_rows if row.get("returned_count", 0) == 0) / len(metric_rows)
+            if metric_rows else 0.0
+        ),
         "expected_no_result_case_count": len(expected_empty),
         "expected_no_result_cases_correct": correct_empty,
+        "expected_no_result_accuracy": correct_empty / len(expected_empty) if expected_empty else None,
     }
 
 
@@ -194,6 +202,8 @@ def run_benchmark(
                 "returned_count": returned_count,
                 "index_version": response.get("index_version"),
                 "config_version": response.get("config_version"),
+                "corrected_query": response.get("corrected_query"),
+                "query_plan": response.get("query_plan"),
             }
             if case["expected_no_results"]:
                 row["unexpected_results"] = returned_count > 0
