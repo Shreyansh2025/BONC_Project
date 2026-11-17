@@ -782,11 +782,10 @@ class SearchPlatformModelTests(unittest.TestCase):
             catalog = discover_source_schema("PEOPLE", schema="dbo")
 
         foreign_key_query = connection.execute.call_args_list[3].args[0]
-        self.assertIn(
-            "fkc.referenced_column_id = referenced_column.column_id",
-            foreign_key_query.text,
-        )
-        self.assertIn("fkc.parent_column_id = parent_column.column_id", foreign_key_query.text)
+        self.assertIn("parent_column.object_id = fkc.parent_object_id", foreign_key_query.text)
+        self.assertIn("parent_column.column_id = fkc.parent_column_id", foreign_key_query.text)
+        self.assertIn("referenced_column.object_id = fkc.referenced_object_id", foreign_key_query.text)
+        self.assertIn("referenced_column.column_id = fkc.referenced_column_id", foreign_key_query.text)
         self.assertEqual(catalog["relationships"], [])
 
     def test_join_view_preview_generates_many_to_one_left_join_only(self):
