@@ -272,18 +272,12 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertEqual(config.fields[0].query_match, "all")
         self.assertEqual(config.rules.semantic_high_confidence_score, 75)
 
-    def test_numeric_required_fields_are_not_inferred_as_equality_filters(self):
+    def test_numeric_required_auto_filter_mode_is_rejected(self):
         payload = config_payload()
         experience = next(field for field in payload["fields"] if field["key"] == "experience")
         experience["query_filter_mode"] = "required"
-        config = CategoryConfig.model_validate(payload)
-        understanding = interpret_query(
-            "3 years experience",
-            config,
-            field_values={"experience": {"2", "3", "5"}},
-        )
-        constraint = next(item for item in understanding["constraints"] if item["field"] == "experience")
-        self.assertEqual(constraint["applied_as"], "ranking_hint_only")
+        with self.assertRaisesRegex(ValidationError, "explicit numeric or date filters"):
+            CategoryConfig.model_validate(payload)
 
     def test_required_skill_and_city_values_are_applied_as_hard_filters(self):
         understanding = interpret_query(
