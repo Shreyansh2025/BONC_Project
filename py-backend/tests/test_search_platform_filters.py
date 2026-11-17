@@ -19,6 +19,7 @@ from app.search_ai.services.platform_search import (
     _apply_result_filters,
     _document_matches_filter,
     _preferred_constraint_bonus,
+    _semantic_candidate_is_acceptable,
     _validate_query_filters,
     search_category,
 )
@@ -229,6 +230,7 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertEqual(config.fields[0].data_type, "text")
         self.assertEqual(config.fields[0].query_filter_mode, "none")
         self.assertEqual(config.fields[0].query_match, "all")
+        self.assertEqual(config.rules.semantic_high_confidence_score, 75)
 
     def test_numeric_required_fields_are_not_inferred_as_equality_filters(self):
         payload = config_payload()
@@ -316,13 +318,21 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertTrue(result["query_plan"]["filters_applied"])
 
     def test_between_filter_supports_integer_ranges(self):
-        field = self.config.fields_by_name["experience"] if hasattr(self.config, "fields_by_name") else next(
-            item for item in self.config.fields if item.key == "experience"
-        )
+        field = next(item for item in self.config.fields if item.key == "experience")
         item = {"field": "experience", "operator": "between", "values": [2, 4]}
         self.assertTrue(_document_matches_filter(self.documents[0], field, item))
         self.assertTrue(_document_matches_filter(self.documents[1], field, item))
         self.assertFalse(_document_matches_filter(self.documents[2], field, item))
+
+    def test_null_filter_treats_delimiter_only_multivalue_text_as_empty(self):
+        field = next(item for item in self.config.fields if item.key == "skills")
+        empty_document = {"fields": {"skills": ", ; | "}}
+        self.assertTrue(_document_matches_filter(
+            empty_document, field, {"field": "skills", "operator": "is_null"}
+        ))
+        self.assertFalse(_document_matches_filter(
+            empty_document, field, {"field": "skills", "operator": "not_null"}
+        ))
 
     def test_boolean_filter_accepts_boolean_and_string_representations(self):
         field = next(item for item in self.config.fields if item.key == "remote")
@@ -382,6 +392,25 @@ class PlatformResultFilterTests(unittest.TestCase):
                 self.config,
                 [{"field": "experience", "operator": "gte", "value": "NaN"}],
             )
+
+    def test_moderate_semantic_match_requires_meaningful_word_overlap(self):
+        document = {
+            "document_id": "job-irrelevant",
+            "fields": {"title": "Graphic designer", "skills": "Photoshop", "city": "Mumbai"},
+        }
+        self.assertFalse(
+            _semantic_candidate_is_acceptable(55.0, "backend developer python", self.config, document)
+        )
+        self.assertTrue(
+            _semantic_candidate_is_acceptable(80.0, "backend developer python", self.config, document)
+        )
+        related_document = {
+            "document_id": "job-related",
+            "fields": {"title": "Backend engineer", "skills": "Python", "city": "Noida"},
+        }
+        self.assertTrue(
+            _semantic_candidate_is_acceptable(55.0, "backend developer python", self.config, related_document)
+        )
 
     def test_preferred_query_constraint_adds_a_bounded_ranking_bonus(self):
         constraints = [{
