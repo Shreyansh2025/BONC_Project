@@ -651,6 +651,53 @@ class SearchPlatformModelTests(unittest.TestCase):
         self.assertIn("AS blank_ids", query.text)
         self.assertIn("[IsDeleted] IS NULL", query.text)
 
+    def test_source_preflight_blocks_truncated_record_limit(self):
+        catalog = {
+            "profile_id": "PEOPLE",
+            "database": "BONC_Dev",
+            "tables": [{
+                "schema": "dbo",
+                "name": "People",
+                "type": "BASE TABLE",
+                "columns": [
+                    {"name": "PersonId", "data_type": "int", "nullable": False},
+                ],
+            }],
+            "relationships": [],
+        }
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.mappings.return_value.one.return_value = {
+            "total_rows": 10,
+            "non_null_ids": 10,
+            "blank_ids": 0,
+            "distinct_ids": 10,
+        }
+        engine = MagicMock()
+        engine.connect.return_value = connection
+
+        with (
+            patch(
+                "app.search_ai.services.source_sync.discover_source_schema",
+                return_value=catalog,
+            ),
+            patch(
+                "app.search_ai.services.source_sync._engine_from_environment_name",
+                return_value=engine,
+            ),
+        ):
+            result = validate_sqlserver_source(
+                "PEOPLE",
+                schema="dbo",
+                table="People",
+                id_column="PersonId",
+                filters=[],
+                max_records=5,
+            )
+
+        self.assertFalse(result["is_valid"])
+        self.assertTrue(any("sync is capped at 5" in warning for warning in result["warnings"]))
+
     def test_source_mapping_suggestions_choose_primary_key_and_skip_sensitive_columns(self):
         catalog = {
             "profile_id": "PEOPLE",
