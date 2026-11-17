@@ -220,11 +220,28 @@ class PlatformResultFilterTests(unittest.TestCase):
             field.pop("data_type", None)
             field.pop("query_filter_mode", None)
             field.pop("query_match", None)
+        # Old persisted configurations may contain inconsistent legacy
+        # searchable/semantic flags. New defaults must not invalidate them.
+        payload["fields"][0]["searchable"] = False
+        payload["fields"][0]["semantic"] = True
         config = CategoryConfig.model_validate(payload)
         self.assertFalse(config.fields[0].filterable)
         self.assertEqual(config.fields[0].data_type, "text")
         self.assertEqual(config.fields[0].query_filter_mode, "none")
         self.assertEqual(config.fields[0].query_match, "all")
+
+    def test_numeric_required_fields_are_not_inferred_as_equality_filters(self):
+        payload = config_payload()
+        experience = next(field for field in payload["fields"] if field["key"] == "experience")
+        experience["query_filter_mode"] = "required"
+        config = CategoryConfig.model_validate(payload)
+        understanding = interpret_query(
+            "3 years experience",
+            config,
+            field_values={"experience": {"2", "3", "5"}},
+        )
+        constraint = next(item for item in understanding["constraints"] if item["field"] == "experience")
+        self.assertEqual(constraint["applied_as"], "ranking_hint_only")
 
     def test_required_skill_and_city_values_are_applied_as_hard_filters(self):
         understanding = interpret_query(
@@ -359,6 +376,13 @@ class PlatformResultFilterTests(unittest.TestCase):
                 [{"field": "experience", "operator": "between", "values": [5, 2]}],
             )
 
+    def test_non_finite_numeric_filter_values_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "finite numeric"):
+            _validate_query_filters(
+                self.config,
+                [{"field": "experience", "operator": "gte", "value": "NaN"}],
+            )
+
     def test_preferred_query_constraint_adds_a_bounded_ranking_bonus(self):
         constraints = [{
             "field": "remote",
@@ -400,12 +424,17 @@ class PlatformSearchFilterApiTests(unittest.TestCase):
         self.assertEqual(request.filters[1].value, 3)
 
     def test_search_request_rejects_invalid_filter_shapes(self):
-        with self.assertRaises(ValidationError):
-            PlatformSearchRequest.model_validate({
-                "query": "backend developer",
-                "category": "jobs",
-                "filters": [{"field": "experience", "operator": "between", "values": [2]}],
-            })
+        invalid_payloads = [
+            {"field": "experience", "operator": "between", "values": [2]},
+            {"field": "city", "operator": "in", "values": ["Noida"], "value": "Noida"},
+        ]
+        for item in invalid_payloads:
+            with self.subTest(item=item), self.assertRaises(ValidationError):
+                PlatformSearchRequest.model_validate({
+                    "query": "backend developer",
+                    "category": "jobs",
+                    "filters": [item],
+                })
 
     def test_admin_search_forwards_filters_to_engine(self):
         expected = {"query": "backend developer", "category": "jobs", "data": []}
