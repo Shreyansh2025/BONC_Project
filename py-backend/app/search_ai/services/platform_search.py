@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import threading
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +18,7 @@ from app.search_ai.services.query_understanding import (
     contains_phrase as _contains_phrase,
     interpret_query,
     normalise_query,
+    split_field_values,
 )
 from app.search_ai.services.platform_common import (
     build_inverted_index,
@@ -163,16 +166,15 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
     inverted_index = build_inverted_index(documents, combined_text)
     field_values: dict[str, set[str]] = {}
     for field in config.fields:
-        if not field.searchable:
+        if not field.searchable and not field.filterable:
             continue
         values: set[str] = set()
         for document in documents:
             raw_value = document.get("fields", {}).get(field.key)
             if raw_value is None:
                 continue
-            for raw_item in str(raw_value).split(","):
-                clean_item = raw_item.strip()
-                min_value_length = 1 if field.role == "skill" else 2
+            for clean_item in split_field_values(raw_value):
+                min_value_length = 1 if field.role == "skill" or field.data_type in {"integer", "number"} else 2
                 normalized_item = _normalise(clean_item).replace(" ", "")
                 if len(normalized_item) >= min_value_length:
                     values.add(clean_item)
@@ -314,12 +316,225 @@ def _phrase_score(query: str, config: CategoryConfig, document: dict[str, Any]) 
     return min(100.0, best_weight / total_weight * 100.0)
 
 
+
+def _parse_boolean(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text_value = str(value).strip().lower()
+    if text_value in {"true", "1", "yes", "y"}:
+        return True
+    if text_value in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def _coerce_filter_value(value: Any, data_type: str) -> Any:
+    if value is None:
+        return None
+    if data_type == "integer":
+        try:
+            numeric = Decimal(str(value).strip())
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"Expected an integer filter value, received {value!r}") from None
+        if numeric != numeric.to_integral_value():
+            raise ValueError(f"Expected an integer filter value, received {value!r}")
+        return int(numeric)
+    if data_type == "number":
+        try:
+            return Decimal(str(value).strip())
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"Expected a numeric filter value, received {value!r}") from None
+    if data_type == "boolean":
+        parsed = _parse_boolean(value)
+        if parsed is None:
+            raise ValueError(f"Expected a boolean filter value, received {value!r}")
+        return parsed
+    if data_type == "date":
+        try:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, date):
+                return datetime.combine(value, datetime.min.time())
+            text_value = str(value).strip().replace("Z", "+00:00")
+            return datetime.fromisoformat(text_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Expected an ISO date or datetime filter value, received {value!r}") from None
+    return _normalise(value)
+
+
+def _raw_field_values(value: Any, data_type: str) -> list[Any]:
+    if value is None:
+        return []
+    if data_type in {"integer", "number", "boolean", "date"}:
+        return [value]
+    return split_field_values(value)
+
+
+def _compare_filter_value(actual: Any, expected: Any, data_type: str, operator: str) -> bool:
+    if operator == "contains":
+        if actual is None:
+            return False
+        return _contains_phrase(_normalise(actual), _normalise(expected))
+    try:
+        actual_value = _coerce_filter_value(actual, data_type)
+        expected_value = _coerce_filter_value(expected, data_type)
+    except ValueError:
+        return False
+    if operator == "eq":
+        return actual_value == expected_value
+    if operator == "ne":
+        return actual_value != expected_value
+    if operator == "gte":
+        return actual_value is not None and expected_value is not None and actual_value >= expected_value
+    if operator == "lte":
+        return actual_value is not None and expected_value is not None and actual_value <= expected_value
+    return False
+
+
+def _validate_query_filters(config: CategoryConfig, filters: list[dict[str, Any]]) -> None:
+    fields = {field.key: field for field in config.fields}
+    for item in filters:
+        field = fields.get(str(item.get("field", "")).strip())
+        if field is None or not field.filterable:
+            raise ValueError(f"Field '{item.get('field')}' is not configured as filterable")
+        operator = item.get("operator")
+        data_type = field.data_type
+        allowed = {"eq", "ne", "in", "is_null", "not_null"}
+        if data_type in {"text", "keyword"}:
+            allowed.add("contains")
+        if data_type in {"integer", "number", "date"}:
+            allowed.update({"gte", "lte", "between"})
+        if operator not in allowed:
+            raise ValueError(f"Operator '{operator}' is not valid for {data_type} field '{field.key}'")
+        if operator in {"eq", "ne", "contains", "gte", "lte"}:
+            _coerce_filter_value(item.get("value"), data_type)
+        if operator == "in":
+            if not item.get("values"):
+                raise ValueError(f"Filter '{field.key}' requires one or more values")
+            for value in item["values"]:
+                _coerce_filter_value(value, data_type)
+        if operator == "between":
+            values = item.get("values") or []
+            if len(values) != 2:
+                raise ValueError(f"Between filter for '{field.key}' requires exactly two values")
+            low, high = (_coerce_filter_value(value, data_type) for value in values)
+            if low > high:
+                raise ValueError(f"Between filter lower bound exceeds upper bound for '{field.key}'")
+
+
+def _document_matches_filter(document: dict[str, Any], field: Any, item: dict[str, Any]) -> bool:
+    raw = document.get("fields", {}).get(field.key)
+    operator = item["operator"]
+    values = _raw_field_values(raw, field.data_type)
+    if operator == "is_null":
+        return raw is None or (isinstance(raw, str) and not raw.strip())
+    if operator == "not_null":
+        return raw is not None and not (isinstance(raw, str) and not raw.strip())
+    if operator == "in":
+        expected = item.get("values", [])
+        return any(
+            _compare_filter_value(actual, candidate, field.data_type, "eq")
+            for actual in values for candidate in expected
+        )
+    if operator == "between":
+        low, high = item["values"]
+        return any(
+            _compare_filter_value(actual, low, field.data_type, "gte")
+            and _compare_filter_value(actual, high, field.data_type, "lte")
+            for actual in values
+        )
+    return any(
+        _compare_filter_value(actual, item.get("value"), field.data_type, operator)
+        for actual in values
+    )
+
+
+def _document_matches_query_constraint(
+    document: dict[str, Any], field: Any, constraint: dict[str, Any]
+) -> bool:
+    actual_values = _raw_field_values(
+        document.get("fields", {}).get(field.key), field.data_type
+    )
+    expected_values = constraint.get("values", [])
+    if not actual_values or not expected_values:
+        return False
+    matched = [
+        any(
+            _compare_filter_value(actual, expected, field.data_type, "eq")
+            for actual in actual_values
+        )
+        for expected in expected_values
+    ]
+    return all(matched) if field.query_match == "all" else any(matched)
+
+
+def _apply_result_filters(
+    documents: list[dict[str, Any]],
+    config: CategoryConfig,
+    constraints: list[dict[str, Any]],
+    explicit_filters: list[dict[str, Any]],
+) -> tuple[set[int], dict[str, Any]]:
+    """Apply configured required query constraints and explicit API filters."""
+    _validate_query_filters(config, explicit_filters)
+    fields = {field.key: field for field in config.fields}
+    required_constraints = [
+        item for item in constraints if item.get("applied_as") == "hard_filter"
+    ]
+    eligible: set[int] = set()
+    for position, document in enumerate(documents):
+        matches_required = all(
+            _document_matches_query_constraint(document, fields[item["field"]], item)
+            for item in required_constraints
+        )
+        matches_explicit = all(
+            _document_matches_filter(document, fields[item["field"]], item)
+            for item in explicit_filters
+        )
+        if matches_required and matches_explicit:
+            eligible.add(position)
+
+    info = {
+        "filters_applied": bool(required_constraints or explicit_filters),
+        "automatic_filters": required_constraints,
+        "explicit_filters": explicit_filters,
+        "filtered_document_count": len(documents) - len(eligible),
+        "eligible_document_count": len(eligible),
+    }
+    return eligible, info
+
+
+def _preferred_constraint_bonus(
+    document: dict[str, Any],
+    config: CategoryConfig,
+    constraints: list[dict[str, Any]],
+) -> float:
+    fields = {field.key: field for field in config.fields}
+    preferred = [
+        item for item in constraints
+        if item.get("applied_as") == "ranking_hint_only"
+        and item.get("field") in fields
+        and fields[item["field"]].query_filter_mode == "preferred"
+    ]
+    if not preferred:
+        return 0.0
+    matched_weight = 0.0
+    total_weight = 0.0
+    for item in preferred:
+        field = fields[item["field"]]
+        weight = max(float(field.weight), 1.0)
+        total_weight += weight
+        if _document_matches_query_constraint(document, field, item):
+            matched_weight += weight
+    return round(8.0 * matched_weight / total_weight, 2) if total_weight else 0.0
+
+
 def search_category(
     *,
     query: str,
     category_id: str,
     page: int = 1,
     page_size: int = 10,
+    filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     category = category_store.get_category(category_id)
     config: CategoryConfig = category["config"]
@@ -335,6 +550,10 @@ def search_category(
     # names, locations and skills are retained as entered; each engine's
     # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
+    explicit_filters = filters or []
+    eligible_positions, filter_info = _apply_result_filters(
+        docs, config, understanding.get("constraints", []), explicit_filters
+    )
     # IDs are matched literally after trimming outer whitespace. Do not
     # case-fold, strip punctuation or tokenize them: "AB-12", "AB12",
     # "abc" and "ABC" may be distinct identifiers.
@@ -372,7 +591,7 @@ def search_category(
         set(exact_identifier_positions)
         if exact_identifier_positions
         else lexical_positions | set(semantic_scores)
-    )
+    ) & eligible_positions
 
     for position in sorted(candidate_positions):
         document = docs[position]
@@ -418,11 +637,15 @@ def search_category(
         )
         if denominator <= 0:
             continue
-        score = (
+        base_score = (
             100.0
             if exact_identifier_match
             else (lexical_component + semantic_component) / denominator
         )
+        preferred_bonus = _preferred_constraint_bonus(
+            document, config, understanding.get("constraints", [])
+        )
+        score = min(100.0, base_score + preferred_bonus)
         if score <= 0:
             continue
 
@@ -435,6 +658,7 @@ def search_category(
             "lexical_score": round(lexical_score, 2),
             "phrase_score": round(phrase_score, 2),
             "semantic_score": round(semantic_score, 2),
+            "preferred_filter_bonus": preferred_bonus,
             "matched_fields": matched_fields,
             "exact_identifier_match": exact_identifier_match,
             "category": category_id,
@@ -465,7 +689,7 @@ def search_category(
             "expanded_lexical_query": expanded_lexical_query,
             "synonym_expansions": synonym_expansions,
             "semantic_query": query,
-            "filters_applied": False,
+            **filter_info,
             "explanation": understanding["explanation"],
         },
         "corrected_query": lexical_query,
