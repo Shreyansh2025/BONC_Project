@@ -35,8 +35,6 @@ class SearchFieldConfig(StrictModel):
     def validate_filter_settings(self) -> "SearchFieldConfig":
         if self.query_filter_mode != "none" and not self.filterable:
             raise ValueError("query_filter_mode requires filterable=true")
-        if self.semantic and not self.searchable:
-            raise ValueError("semantic=true requires searchable=true")
         return self
 
     @field_validator("key")
@@ -272,6 +270,8 @@ class SearchQueryFilter(StrictModel):
             raise ValueError("in filter requires at least one value")
         if self.operator == "between" and len(self.values) != 2:
             raise ValueError("between filter requires exactly two values")
+        if self.operator in {"in", "between"} and self.value is not None:
+            raise ValueError(f"{self.operator} filter does not accept a scalar value")
         if self.operator in {"is_null", "not_null"} and (self.value is not None or self.values):
             raise ValueError("null filters do not accept values")
         if self.operator not in {"in", "between"} and self.values:
