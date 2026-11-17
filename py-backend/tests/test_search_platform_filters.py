@@ -435,6 +435,10 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertFalse(
             _semantic_candidate_is_acceptable(55.0, "backend developer python", self.config, document)
         )
+        # The configured field label "Skills" must not count as lexical evidence.
+        self.assertFalse(
+            _semantic_candidate_is_acceptable(55.0, "skills backend python", self.config, document)
+        )
         self.assertTrue(
             _semantic_candidate_is_acceptable(80.0, "backend developer python", self.config, document)
         )
