@@ -452,6 +452,7 @@ export interface PlatformSearchResult {
   lexical_score: number;
   phrase_score?: number;
   semantic_score: number;
+  preferred_filter_bonus?: number;
   matched_fields: string[];
   exact_identifier_match?: boolean;
   category: string;
