@@ -874,7 +874,7 @@ def validate_sqlserver_source(
         "blank_id_count": blank_ids,
         "duplicate_id_count": duplicate_ids,
         "max_records": max_records,
-        "is_valid": total_rows > 0 and null_ids == 0 and blank_ids == 0 and duplicate_ids == 0,
+        "is_valid": total_rows > 0 and total_rows <= max_records and null_ids == 0 and blank_ids == 0 and duplicate_ids == 0,
         "warnings": warnings,
     }
 
