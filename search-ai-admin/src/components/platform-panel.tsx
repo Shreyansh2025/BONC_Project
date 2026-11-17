@@ -471,10 +471,10 @@ export default function PlatformPanel() {
         searchable: field.searchable,
         semantic: field.semantic,
         aliases: field.aliases,
-        filterable: false,
-        data_type: "text",
-        query_filter_mode: "none",
-        query_match: "all",
+        filterable: field.filterable ?? false,
+        data_type: field.data_type ?? "text",
+        query_filter_mode: field.query_filter_mode ?? "none",
+        query_match: field.query_match ?? "all",
       }));
       setFields(safeFields);
       if (result.id_column_suggestion.column) {
