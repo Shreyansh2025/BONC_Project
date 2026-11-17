@@ -16,7 +16,7 @@ class StrictModel(BaseModel):
 
 
 class SearchFieldConfig(StrictModel):
-    """Maps one source column to a searchable field in the common document."""
+    """Maps one source column into searchable and/or filterable category data."""
 
     key: str = Field(min_length=1, max_length=64)
     source_column: str = Field(min_length=1, max_length=128)
@@ -26,6 +26,18 @@ class SearchFieldConfig(StrictModel):
     searchable: bool = True
     semantic: bool = True
     aliases: list[str] = Field(default_factory=list, max_length=20)
+    filterable: bool = False
+    data_type: Literal["text", "keyword", "integer", "number", "boolean", "date"] = "text"
+    query_filter_mode: Literal["none", "preferred", "required"] = "none"
+    query_match: Literal["any", "all"] = "all"
+
+    @model_validator(mode="after")
+    def validate_filter_settings(self) -> "SearchFieldConfig":
+        if self.query_filter_mode != "none" and not self.filterable:
+            raise ValueError("query_filter_mode requires filterable=true")
+        if self.semantic and not self.searchable:
+            raise ValueError("semantic=true requires searchable=true")
+        return self
 
     @field_validator("key")
     @classmethod
@@ -236,11 +248,43 @@ class SearchFeedbackRequest(StrictModel):
     index_version: int | None = Field(default=None, ge=0)
 
 
+class SearchQueryFilter(StrictModel):
+    """A typed, category-field-scoped result filter (not a SQL source-sync filter)."""
+
+    field: str = Field(min_length=1, max_length=64)
+    operator: Literal["eq", "ne", "in", "contains", "gte", "lte", "between", "is_null", "not_null"]
+    value: str | int | float | bool | None = None
+    values: list[str | int | float | bool] = Field(default_factory=list, max_length=20)
+
+    @field_validator("field")
+    @classmethod
+    def validate_field_key(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _IDENTIFIER_RE.fullmatch(value):
+            raise ValueError("Filter field must be a configured field key")
+        return value
+
+    @model_validator(mode="after")
+    def validate_filter_values(self) -> "SearchQueryFilter":
+        if self.operator in {"eq", "ne", "contains", "gte", "lte"} and self.value is None:
+            raise ValueError(f"{self.operator} filter requires a value")
+        if self.operator == "in" and not self.values:
+            raise ValueError("in filter requires at least one value")
+        if self.operator == "between" and len(self.values) != 2:
+            raise ValueError("between filter requires exactly two values")
+        if self.operator in {"is_null", "not_null"} and (self.value is not None or self.values):
+            raise ValueError("null filters do not accept values")
+        if self.operator not in {"in", "between"} and self.values:
+            raise ValueError(f"{self.operator} filter does not accept a values list")
+        return self
+
+
 class PlatformSearchRequest(StrictModel):
     query: str = Field(min_length=1, max_length=500)
     category: str = Field(min_length=2, max_length=64)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=10, ge=1, le=100)
+    filters: list[SearchQueryFilter] = Field(default_factory=list, max_length=20)
 
     @field_validator("query")
     @classmethod
