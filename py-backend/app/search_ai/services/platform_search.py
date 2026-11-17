@@ -127,6 +127,18 @@ def _field_text(config: CategoryConfig, document: dict[str, Any], *, semantic_on
     return " ".join(parts)
 
 
+def _field_values_text(config: CategoryConfig, document: dict[str, Any]) -> str:
+    """Join actual searchable values without synthetic field labels."""
+    values = document.get("fields", {})
+    return " ".join(
+        str(values.get(field.key)).strip()
+        for field in config.fields
+        if field.searchable
+        and values.get(field.key) is not None
+        and str(values.get(field.key)).strip()
+    )
+
+
 def invalidate_category_index(category_id: str) -> None:
     with _INDEX_LOCK:
         _INDEXES.pop(category_id, None)
@@ -333,7 +345,7 @@ def _semantic_candidate_is_acceptable(
         return True
     return shares_any_word(
         query,
-        _field_text(config, document),
+        _field_values_text(config, document),
         stop_words=_STOP_WORDS,
     )
 
