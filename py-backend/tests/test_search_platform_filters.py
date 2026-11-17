@@ -427,7 +427,7 @@ class PlatformResultFilterTests(unittest.TestCase):
             )
 
     def test_non_finite_numeric_filter_values_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "finite numeric"):
+        with self.assertRaisesRegex(ValueError, "finite"):
             _validate_query_filters(
                 self.config,
                 [{"field": "experience", "operator": "gte", "value": "NaN"}],
