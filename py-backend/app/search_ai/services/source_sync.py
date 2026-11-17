@@ -258,6 +258,13 @@ _SEARCHABLE_TYPES = {
     "uniqueidentifier", "int", "bigint", "smallint", "tinyint",
     "decimal", "numeric", "float", "real", "money", "smallmoney",
 }
+_FILTER_ONLY_TYPES = {
+    "bit", "date", "datetime", "datetime2", "smalldatetime", "datetimeoffset",
+}
+_INTEGER_TYPES = {"int", "bigint", "smallint", "tinyint"}
+_NUMBER_TYPES = {"decimal", "numeric", "float", "real", "money", "smallmoney"}
+_DATE_TYPES = {"date", "datetime", "datetime2", "smalldatetime", "datetimeoffset"}
+_TEXT_TYPES = {"char", "nchar", "varchar", "nvarchar", "text", "ntext"}
 
 _ID_COMPARABLE_TYPES = {
     "char", "nchar", "varchar", "nvarchar",
@@ -373,7 +380,10 @@ def build_source_mapping_suggestions(
     suggestions: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     used_keys: set[str] = set()
-    available_columns = [column for column in columns if str(column.get("data_type", "")).lower() in _SEARCHABLE_TYPES]
+    available_columns = [
+        column for column in columns
+        if str(column.get("data_type", "")).lower() in (_SEARCHABLE_TYPES | _FILTER_ONLY_TYPES)
+    ]
 
     title_candidates: list[dict[str, Any]] = []
     for column in available_columns:
@@ -413,19 +423,47 @@ def build_source_mapping_suggestions(
         role = matching_roles[0] if matching_roles else "general"
         if role == "title":
             title_candidates.append(column)
+        sql_type = str(column.get("data_type", "")).lower()
+        discrete_role = role in {"skill", "location", "category"}
+        is_searchable = sql_type in _SEARCHABLE_TYPES
+        if sql_type in _INTEGER_TYPES:
+            suggested_data_type = "integer"
+        elif sql_type in _NUMBER_TYPES:
+            suggested_data_type = "number"
+        elif sql_type == "bit":
+            suggested_data_type = "boolean"
+        elif sql_type in _DATE_TYPES:
+            suggested_data_type = "date"
+        elif sql_type == "uniqueidentifier" or discrete_role:
+            suggested_data_type = "keyword"
+        else:
+            suggested_data_type = "text"
+        is_filterable = discrete_role or suggested_data_type in {
+            "integer", "number", "boolean", "date"
+        }
         suggestions.append({
             "key": "",
             "source_column": name,
             "label": re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name.split("__")[-1]).replace("_", " ").strip().title(),
             "role": role,
             "weight": _ROLE_DEFAULTS[role][0],
-            "searchable": True,
-            "semantic": str(column.get("data_type", "")).lower() in {
-                "char", "nchar", "varchar", "nvarchar", "text", "ntext"
-            },
+            "searchable": is_searchable,
+            "semantic": sql_type in _TEXT_TYPES,
             "aliases": list(_ROLE_DEFAULTS[role][1]),
+            "filterable": is_filterable,
+            "data_type": suggested_data_type,
+            "query_filter_mode": "preferred" if discrete_role else "none",
+            "query_match": "all",
             "confidence": "high" if role != "general" else "low",
-            "reason": f"Column name matched the {role} field pattern" if role != "general" else "Unclassified searchable column; verify whether it adds useful search context",
+            "reason": (
+                f"Column name matched the {role} field pattern"
+                if role != "general"
+                else (
+                    "Typed filter field inferred from SQL metadata; verify whether it is useful"
+                    if is_filterable
+                    else "Unclassified searchable column; verify whether it adds useful search context"
+                )
+            ),
         })
 
     # Keep one obvious title field. Additional name-like columns are retained
