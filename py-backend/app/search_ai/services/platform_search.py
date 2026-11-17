@@ -17,12 +17,7 @@ from app.search_ai.services.query_understanding import (
     interpret_query,
     normalise_query,
 )
-from app.search_ai.services.search_common import (
-    build_inverted_index,
-    build_vocabulary,
-    candidate_indices,
-    correct_query,
-)
+from app.search_ai.services.search_common import correct_query
 
 
 _STOP_WORDS = {"a", "an", "and", "at", "for", "in", "near", "of", "on", "the", "to", "with"}
@@ -45,6 +40,63 @@ _INDEXES: dict[str, CategoryIndex] = {}
 
 def _normalise(value: Any) -> str:
     return normalise_query(value)
+
+
+def _platform_tokens(value: Any) -> list[str]:
+    """Tokenize generic-platform text without collapsing technical skill names.
+
+    The legacy tokenizer intentionally handles punctuation uniformly for
+    Company/Product search. Generic engines need to preserve tokens such as
+    C, C++, and C# so candidate retrieval stays category-correct.
+    """
+    return _normalise(value).split()
+
+
+def _build_platform_vocabulary(
+    documents: list[dict[str, Any]],
+    combined_text_fn,
+) -> Counter:
+    """Build a category-local vocabulary using generic-platform tokens."""
+    vocabulary: Counter = Counter()
+    for document in documents:
+        vocabulary.update(_platform_tokens(combined_text_fn(document)))
+    return vocabulary
+
+
+def _build_platform_inverted_index(
+    documents: list[dict[str, Any]],
+    combined_text_fn,
+) -> dict[str, set[int]]:
+    """Map generic-platform tokens to document positions."""
+    inverted_index: dict[str, set[int]] = {}
+    for position, document in enumerate(documents):
+        for token in set(_platform_tokens(combined_text_fn(document))):
+            inverted_index.setdefault(token, set()).add(position)
+    return inverted_index
+
+
+def _platform_candidate_indices(
+    term: str,
+    inverted_index: dict[str, set[int]],
+    total: int,
+) -> set[int]:
+    """Find candidate documents using punctuation-aware platform tokens.
+
+    Returning all documents when no query token is indexed preserves the
+    legacy candidate helper's safe fallback for compound terms and unknown
+    vocabulary. Exact token hits remain isolated (for example C++ != C#).
+    """
+    if not inverted_index or total <= 0:
+        return set(range(total))
+
+    tokens = _platform_tokens(term)
+    if not tokens:
+        return set(range(total))
+
+    candidates: set[int] = set()
+    for token in tokens:
+        candidates.update(inverted_index.get(token, set()))
+    return candidates if candidates else set(range(total))
 
 
 def _build_weighted_semantic_vectors(
@@ -158,8 +210,8 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
         vectors_index.add(vectors)
 
     combined_text = lambda doc: _field_text(config, doc)
-    vocabulary = build_vocabulary(documents, combined_text)
-    inverted_index = build_inverted_index(documents, combined_text)
+    vocabulary = _build_platform_vocabulary(documents, combined_text)
+    inverted_index = _build_platform_inverted_index(documents, combined_text)
     field_values: dict[str, set[str]] = {}
     for field in config.fields:
         if not field.searchable:
@@ -362,7 +414,7 @@ def search_category(
                 semantic_scores[int(position)] = max(0.0, float(similarity) * 100.0)
 
     lexical_positions = (
-        candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
+        _platform_candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
         if config.rules.lexical_enabled and not exact_identifier_positions
         else set()
     )
