@@ -564,12 +564,35 @@ class SearchPlatformModelTests(unittest.TestCase):
                 }
             ]
             with (
+                patch(
+                    "app.search_ai.services.source_sync.validate_sqlserver_source",
+                    return_value={"is_valid": True, "warnings": []},
+                ),
                 patch("app.search_ai.services.source_sync._source_engine", return_value=engine),
                 patch("app.search_ai.services.source_sync.replace_documents") as replace_mock,
                 self.assertRaisesRegex(ValueError, "NULL or blank document ID"),
             ):
                 sync_sqlserver_category(config, updated_by="test")
             replace_mock.assert_not_called()
+
+    def test_source_sync_enforces_preflight_before_reading_source_rows(self):
+        config = CategoryConfig.model_validate(people_config())
+        with (
+            patch(
+                "app.search_ai.services.source_sync.validate_sqlserver_source",
+                return_value={
+                    "is_valid": False,
+                    "warnings": ["2 duplicate document IDs were found."],
+                },
+            ),
+            patch("app.search_ai.services.source_sync._source_engine") as source_engine,
+            patch("app.search_ai.services.source_sync.replace_documents") as replace_mock,
+            self.assertRaisesRegex(ValueError, "Source preflight failed"),
+        ):
+            sync_sqlserver_category(config, updated_by="test")
+
+        source_engine.assert_not_called()
+        replace_mock.assert_not_called()
 
     def test_source_preflight_detects_null_and_duplicate_document_ids(self):
         catalog = {
