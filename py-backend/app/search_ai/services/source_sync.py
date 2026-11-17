@@ -227,8 +227,8 @@ _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
         "productname", "companyname", "articletitle", "businessname",
     ),
     "skill": (
-        "skill", "skills", "expertise", "technology", "technologies",
-        "techstack", "stack", "keywords", "tags",
+        "skill", "skills", "keyskills", "expertise", "technology", "technologies",
+        "techstack", "stack", "keywords", "tags", "competencies",
     ),
     "location": (
         "location", "city", "state", "country", "region", "address",
@@ -236,7 +236,8 @@ _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "category": (
         "category", "categoryname", "type", "profession", "industry",
-        "articletype", "productcategory",
+        "articletype", "productcategory", "jobfunction", "jobcategory",
+        "employmenttype", "jobtype", "workmode", "department",
     ),
     "description": (
         "description", "bio", "about", "summary", "content", "body",
