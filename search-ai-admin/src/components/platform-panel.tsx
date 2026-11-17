@@ -919,18 +919,27 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>Role</span><select value={field.role} onChange={(e) => updateField(index, { role: e.target.value as PlatformFieldRole })}>{ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
               <label className="setting-field"><span>Weight</span><input type="number" min="0" max="100" step="0.5" value={field.weight} onChange={(e) => updateField(index, { weight: Number(e.target.value) })} /></label>
               <label className="setting-field"><span>Aliases (comma separated)</span><input value={field.aliases.join(", ")} onChange={(e) => updateField(index, { aliases: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} /></label>
-              <label className="setting-field"><span>Data type</span><select value={field.data_type || "text"} onChange={(e) => updateField(index, { data_type: e.target.value as PlatformFieldConfig["data_type"] })}>
+              <label className="setting-field"><span>Data type</span><select value={field.data_type || "text"} onChange={(e) => {
+                const dataType = e.target.value as PlatformFieldConfig["data_type"];
+                updateField(index, {
+                  data_type: dataType,
+                  ...(field.query_filter_mode === "required" && ["integer", "number", "date"].includes(dataType || "")
+                    ? { query_filter_mode: "preferred" as const }
+                    : {}),
+                });
+              }}>
                 <option value="text">Text</option><option value="keyword">Keyword / exact value</option><option value="integer">Integer</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="date">Date / datetime</option>
               </select></label>
               <label className="platform-checkbox"><input type="checkbox" checked={field.searchable} onChange={(e) => updateField(index, { searchable: e.target.checked, ...(e.target.checked ? {} : { semantic: false }) })} /> Searchable</label>
               <label className="platform-checkbox"><input type="checkbox" checked={field.semantic} disabled={!field.searchable} onChange={(e) => updateField(index, { semantic: e.target.checked })} /> Include in semantic text</label>
               <label className="platform-checkbox"><input type="checkbox" checked={Boolean(field.filterable)} onChange={(e) => updateField(index, { filterable: e.target.checked, query_filter_mode: e.target.checked ? (field.query_filter_mode || "none") : "none" })} /> Allow result filters</label>
               <label className="setting-field"><span>Query match behavior</span><select value={field.query_filter_mode || "none"} disabled={!field.filterable} onChange={(e) => updateField(index, { query_filter_mode: e.target.value as PlatformFieldConfig["query_filter_mode"] })}>
-                <option value="none">Ranking only</option><option value="preferred">Preferred (boost matches)</option><option value="required">Required (filter results)</option>
+                <option value="none">Ranking only</option><option value="preferred">Preferred (boost matches)</option><option value="required" disabled={["integer", "number", "date"].includes(field.data_type || "text")}>Required (filter results)</option>
               </select></label>
               <label className="setting-field"><span>Multiple values</span><select value={field.query_match || "all"} disabled={!field.filterable || field.query_filter_mode !== "required"} onChange={(e) => updateField(index, { query_match: e.target.value as PlatformFieldConfig["query_match"] })}>
                 <option value="all">Require all values</option><option value="any">Match any value</option>
               </select></label>
+              {field.query_filter_mode === "required" && ["integer", "number", "date"].includes(field.data_type || "text") && <small>Use explicit typed filters for numeric/date conditions such as greater-than or date ranges.</small>}
               <button type="button" className="secondary-button danger-button" onClick={() => removeField(index)} disabled={fields.length <= 1}>Remove</button>
             </div>)}
           </div>
