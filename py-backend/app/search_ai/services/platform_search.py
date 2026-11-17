@@ -689,9 +689,14 @@ def search_category(
             if config.rules.semantic_enabled and config.rules.semantic_weight > 0
             else 0.0
         )
+        # Do not dilute lexical scores when this category has no semantic
+        # vectors (for example, all mapped fields are non-semantic or empty).
+        semantic_signal_available = (
+            config.rules.semantic_enabled and index.vectors_index is not None
+        )
         denominator = (
             (config.rules.lexical_weight if config.rules.lexical_enabled else 0.0)
-            + (config.rules.semantic_weight if config.rules.semantic_enabled else 0.0)
+            + (config.rules.semantic_weight if semantic_signal_available else 0.0)
         )
         if denominator <= 0:
             continue
