@@ -642,7 +642,7 @@ export default function PlatformPanel() {
                 <small>{item.config.fields.length} mapped fields · {item.config.public_search_enabled ? "public search enabled" : "admin-only"}</small>
               </div>
               <div className="platform-category-actions">
-                <button type="button" className="secondary-button" onClick={() => { setSelectedCategory(item.config.category_id); void loadHistory(item.config.category_id); }}>Test</button>
+                <button type="button" className="secondary-button" onClick={() => { setSelectedCategory(item.config.category_id); setSearchFilters([]); setSearchResult(null); void loadHistory(item.config.category_id); void loadFeedback(item.config.category_id); }}>Test</button>
                 <button type="button" className="secondary-button" onClick={() => loadCategoryForEdit(item)}>Edit</button>
                 {item.config.source.type === "sqlserver" && <button type="button" className="secondary-button" disabled={syncing === item.config.category_id} onClick={() => void syncCategory(item.config.category_id)}>{syncing === item.config.category_id ? "Syncing…" : "Sync source"}</button>}
               </div>
