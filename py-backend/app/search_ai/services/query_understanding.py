@@ -1,7 +1,9 @@
 """Deterministic query interpretation for configuration-driven search engines.
 
-This module does not call an external LLM. It uses each engine's field aliases
-and indexed field values to produce an explainable query plan.
+The interpreter is category-local: aliases and values come only from the
+selected category. Exact values can become actual query-time filters only when
+an administrator explicitly configures that field as filterable with
+query_filter_mode="required".
 """
 from __future__ import annotations
 
@@ -29,6 +31,17 @@ def contains_phrase(normal_query: str, phrase: str) -> bool:
     return re.search(pattern, normal_query) is not None
 
 
+def split_field_values(value: Any) -> list[str]:
+    """Split common multi-value source fields without splitting ordinary phrases."""
+    if value is None:
+        return []
+    return [
+        item.strip()
+        for item in re.split(r"[,;|\n]+", str(value))
+        if item and item.strip()
+    ]
+
+
 def _phrase_variants(phrase: str) -> tuple[str, ...]:
     """Return conservative singular/plural forms for a configured alias."""
     words = phrase.split()
@@ -49,8 +62,6 @@ def _phrase_variants(phrase: str) -> tuple[str, ...]:
 
 def _without_phrases(query: str, phrases: set[str]) -> str:
     result = query
-    # Remove longer expressions first so a short alias cannot partially consume
-    # a longer phrase that also has an independent meaning.
     for phrase in sorted(phrases, key=lambda item: (-len(item), item)):
         if not phrase:
             continue
@@ -83,7 +94,6 @@ def _expand_synonym_groups(
         if not matched:
             continue
 
-        # Prefer the most specific phrase when synonym groups overlap.
         matched_term = sorted(matched, key=lambda item: (-len(item), item))[0]
         alternatives = [
             term for term in terms
@@ -103,8 +113,7 @@ def _expand_synonym_groups(
             additions.extend(alternative.split())
             seen_additions.add(alternative)
 
-    expanded_query = " ".join([query, *additions]).strip()
-    return expanded_query, expansions
+    return " ".join([query, *additions]).strip(), expansions
 
 
 def interpret_query(
@@ -114,12 +123,7 @@ def interpret_query(
     field_values: dict[str, set[str]] | None = None,
     documents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a transparent query plan from configured aliases and known field values.
-
-    Exact values and field aliases are hints, not hard filters. This intentionally
-    avoids dropping a potentially relevant result when a query phrase is ambiguous
-    or when a source has incomplete metadata.
-    """
+    """Build a transparent field/value plan using only this category's schema."""
     normalised = normalise_query(query)
     matched_aliases: dict[str, list[str]] = {}
     matched_values: dict[str, list[str]] = {}
@@ -129,13 +133,12 @@ def interpret_query(
     matched_value_phrases: set[str] = set()
 
     for field in config.fields:
-        if not field.searchable:
+        if not field.searchable and not field.filterable:
             continue
 
         aliases: set[str] = set()
         for alias in field.aliases:
             alias_text = normalise_query(alias)
-            # Ignore one-character aliases: they are too likely to match noise.
             if len(alias_text.replace(" ", "")) < 2:
                 continue
             for variant in _phrase_variants(alias_text):
@@ -150,18 +153,16 @@ def interpret_query(
         else:
             candidates = set()
             for document in documents or []:
-                raw = document.get("fields", {}).get(field.key)
-                if raw is not None:
-                    candidates.update(
-                        value.strip() for value in str(raw).split(",") if value.strip()
-                    )
+                candidates.update(split_field_values(document.get("fields", {}).get(field.key)))
 
         values: set[str] = set()
-        for value in candidates:
-            value_text = str(value).strip()
+        for candidate in candidates:
+            value_text = str(candidate).strip()
             normalised_value = normalise_query(value_text)
-            min_value_length = 1 if field.role == "skill" else 2
-            if len(normalised_value.replace(" ", "")) >= min_value_length and contains_phrase(normalised, normalised_value):
+            if not normalised_value:
+                continue
+            minimum_length = 1 if field.role == "skill" or field.data_type in {"integer", "number"} else 2
+            if len(normalised_value.replace(" ", "")) >= minimum_length and contains_phrase(normalised, normalised_value):
                 values.add(value_text)
                 recognised_phrases.add(normalised_value)
                 matched_value_phrases.add(normalised_value)
@@ -174,8 +175,6 @@ def interpret_query(
         if combined:
             matched_fields[field.key] = sorted(combined)
 
-    # Aliases describe the kind of information sought (e.g. "expertise" means
-    # the skills field); they are not necessarily literal terms in a document.
     lexical_query = _without_phrases(normalised, alias_phrases)
     recognised_tokens = set(" ".join(recognised_phrases).split())
     unmatched_tokens = sorted({
@@ -183,27 +182,50 @@ def interpret_query(
         if token not in _STOP_WORDS and token not in recognised_tokens
     })
 
-    constraints = []
+    constraints: list[dict[str, Any]] = []
     for field in config.fields:
         values = matched_values.get(field.key, [])
-        if values:
-            constraints.append({
-                "field": field.key,
-                "role": field.role,
-                "values": values,
-                "match": "exact_index_value",
-                "applied_as": "ranking_hint_only",
-            })
+        if not values:
+            continue
+        hard_filter = bool(field.filterable and field.query_filter_mode == "required")
+        constraints.append({
+            "field": field.key,
+            "role": field.role,
+            "values": values,
+            "match": "exact_index_value",
+            "query_match": field.query_match,
+            "applied_as": "hard_filter" if hard_filter else "ranking_hint_only",
+        })
 
     expanded_lexical_query, synonym_expansions = _expand_synonym_groups(
         lexical_query,
         config.synonyms,
         matched_value_phrases,
     )
+    has_recognised = bool(matched_aliases or matched_values)
+    hard_filter_count = sum(
+        1 for constraint in constraints if constraint["applied_as"] == "hard_filter"
+    )
+
+    if hard_filter_count:
+        explanation = (
+            f"Recognised configured field values and applied {hard_filter_count} required "
+            "query constraint(s) as filters. Other terms remain in lexical/semantic search."
+        )
+    elif has_recognised:
+        explanation = (
+            "Recognised configured field aliases and values. They guide ranking only; "
+            "no automatic hard filters are configured for these fields."
+        )
+    else:
+        explanation = (
+            "No configured field aliases or exact indexed values were recognised; "
+            "the complete query is used for general search."
+        )
 
     return {
         "normalised_query": normalised,
-        "query_type": "field_guided" if matched_aliases or matched_values else "free_text",
+        "query_type": "field_guided" if has_recognised else "free_text",
         "field_hints": matched_aliases,
         "matched_aliases": matched_aliases,
         "matched_values": matched_values,
@@ -213,11 +235,5 @@ def interpret_query(
         "expanded_lexical_query": expanded_lexical_query,
         "synonym_expansions": synonym_expansions,
         "unmatched_tokens": unmatched_tokens,
-        "explanation": (
-            "Recognised field aliases and exact values from this engine's indexed data. "
-            "They guide ranking; no hard filters were applied."
-            if matched_aliases or matched_values
-            else "No configured field aliases or exact indexed values were recognised; "
-                 "the complete query is used for general search."
-        ),
+        "explanation": explanation,
     }
