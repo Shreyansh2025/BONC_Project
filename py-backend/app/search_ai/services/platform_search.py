@@ -455,9 +455,9 @@ def _document_matches_filter(document: dict[str, Any], field: Any, item: dict[st
     operator = item["operator"]
     values = _raw_field_values(raw, field.data_type)
     if operator == "is_null":
-        return raw is None or (isinstance(raw, str) and not raw.strip())
+        return not values
     if operator == "not_null":
-        return raw is not None and not (isinstance(raw, str) and not raw.strip())
+        return bool(values)
     if operator == "in":
         expected = item.get("values", [])
         return any(
