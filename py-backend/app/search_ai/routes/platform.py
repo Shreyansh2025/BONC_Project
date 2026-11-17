@@ -93,6 +93,7 @@ def platform_search_endpoint(body: PlatformSearchRequest):
             category_id=body.category,
             page=body.page,
             page_size=body.page_size,
+            filters=[item.model_dump() for item in body.filters],
         )
     except category_store.CategoryNotFoundError as exc:
         raise _not_found(exc) from exc
@@ -112,6 +113,7 @@ def admin_search_category(
             category_id=body.category,
             page=body.page,
             page_size=body.page_size,
+            filters=[item.model_dump() for item in body.filters],
         )
     except category_store.CategoryNotFoundError as exc:
         raise _not_found(exc) from exc
