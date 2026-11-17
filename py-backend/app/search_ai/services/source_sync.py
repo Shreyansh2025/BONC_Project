@@ -238,6 +238,8 @@ _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
         "category", "categoryname", "type", "profession", "industry",
         "articletype", "productcategory", "jobfunction", "jobcategory",
         "employmenttype", "jobtype", "workmode", "department",
+        "status", "jobstatus", "employmentstatus", "currency",
+        "salarycurrency", "salaryperiod", "contracttype",
     ),
     "description": (
         "description", "bio", "about", "summary", "content", "body",
