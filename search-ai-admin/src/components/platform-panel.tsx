@@ -22,6 +22,7 @@ import {
   type PlatformFieldConfig,
   type PlatformFieldRole,
   type PlatformSourceFilter,
+  type PlatformSearchFilter,
   type PlatformSearchResponse,
   type PlatformSourceProfile,
   type PlatformSourceCatalog,
@@ -110,6 +111,7 @@ export default function PlatformPanel() {
   const [selectedCategory, setSelectedCategory] = useState("");
   const [rawDocuments, setRawDocuments] = useState('[\n  {\n    "document_id": "person-1",\n    "title": "Shreyansh",\n    "fields": { "name": "Shreyansh", "skills": "OCR, Python", "bio": "Document processing developer", "location": "Indore" }\n  }\n]');
   const [query, setQuery] = useState("Shreyansh OCR expert in Indore");
+  const [searchFilters, setSearchFilters] = useState<PlatformSearchFilter[]>([]);
   const [searchResult, setSearchResult] = useState<PlatformSearchResponse | null>(null);
   const [categoryHistory, setCategoryHistory] = useState<PlatformCategoryHistoryItem[]>([]);
   const [feedbackSummary, setFeedbackSummary] = useState<PlatformFeedbackSummary | null>(null);
@@ -251,11 +253,29 @@ export default function PlatformPanel() {
       searchable: true,
       semantic: true,
       aliases: [],
+      filterable: false,
+      data_type: "text",
+      query_filter_mode: "none",
+      query_match: "all",
     }]);
   };
 
   const removeField = (index: number) => {
     setFields((current) => current.filter((_, i) => i !== index));
+  };
+
+  const addSearchFilter = () => {
+    const first = selectedRecord?.config.fields.find((field) => field.filterable);
+    if (!first) {
+      setError("Configure at least one filterable field on this engine before adding a search filter.");
+      return;
+    }
+    setSearchFilters((current) => [...current, { field: first.key, operator: "eq", value: "" }]);
+    setError("");
+  };
+
+  const updateSearchFilter = (index: number, patch: Partial<PlatformSearchFilter>) => {
+    setSearchFilters((current) => current.map((item, i) => i === index ? { ...item, ...patch } : item));
   };
 
   const addSourceFilter = () => {
@@ -307,6 +327,7 @@ export default function PlatformPanel() {
     setSelectedCategory(config.category_id);
     void loadHistory(config.category_id);
     void loadFeedback(config.category_id);
+    setSearchFilters([]);
     setSearchResult(null);
     setNotice("Editing " + config.display_name + ". Save changes to create a new configuration version.");
     setError("");
@@ -447,6 +468,10 @@ export default function PlatformPanel() {
         searchable: field.searchable,
         semantic: field.semantic,
         aliases: field.aliases,
+        filterable: false,
+        data_type: "text",
+        query_filter_mode: "none",
+        query_match: "all",
       }));
       setFields(safeFields);
       if (result.id_column_suggestion.column) {
@@ -564,7 +589,32 @@ export default function PlatformPanel() {
     setError("");
     setSearchResult(null);
     try {
-      const result = await runPlatformAdminSearch({ query, category: selectedCategory });
+      const selectedFields = selectedRecord?.config.fields ?? [];
+      const cleanFilters = searchFilters.map((item) => {
+        const field = selectedFields.find((candidate) => candidate.key === item.field);
+        if (!field?.filterable) throw new Error("Select a configured filterable field.");
+        const operator = item.operator;
+        if (operator === "in" || operator === "between") {
+          const values = (item.values || []).map((value) => String(value).trim()).filter(Boolean);
+          if (!values.length) throw new Error("Enter filter values for " + field.label + ".");
+          if (operator === "between" && values.length !== 2) {
+            throw new Error("Between filters require exactly two comma-separated values.");
+          }
+          return { field: item.field, operator, values };
+        }
+        if (operator === "is_null" || operator === "not_null") {
+          return { field: item.field, operator };
+        }
+        if (item.value === undefined || item.value === null || String(item.value).trim() === "") {
+          throw new Error("Enter a filter value for " + field.label + ".");
+        }
+        return { field: item.field, operator, value: item.value };
+      });
+      const result = await runPlatformAdminSearch({
+        query,
+        category: selectedCategory,
+        filters: cleanFilters,
+      });
       setSearchResult(result);
     } catch (e) {
       setError(getError(e, "Search test failed. Ensure the category has been ingested or synced."));
@@ -855,8 +905,18 @@ export default function PlatformPanel() {
               <label className="setting-field"><span>Role</span><select value={field.role} onChange={(e) => updateField(index, { role: e.target.value as PlatformFieldRole })}>{ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
               <label className="setting-field"><span>Weight</span><input type="number" min="0" max="100" step="0.5" value={field.weight} onChange={(e) => updateField(index, { weight: Number(e.target.value) })} /></label>
               <label className="setting-field"><span>Aliases (comma separated)</span><input value={field.aliases.join(", ")} onChange={(e) => updateField(index, { aliases: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} /></label>
-              <label className="platform-checkbox"><input type="checkbox" checked={field.searchable} onChange={(e) => updateField(index, { searchable: e.target.checked })} /> Searchable</label>
-              <label className="platform-checkbox"><input type="checkbox" checked={field.semantic} onChange={(e) => updateField(index, { semantic: e.target.checked })} /> Include in semantic text</label>
+              <label className="setting-field"><span>Data type</span><select value={field.data_type || "text"} onChange={(e) => updateField(index, { data_type: e.target.value as PlatformFieldConfig["data_type"] })}>
+                <option value="text">Text</option><option value="keyword">Keyword / exact value</option><option value="integer">Integer</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="date">Date / datetime</option>
+              </select></label>
+              <label className="platform-checkbox"><input type="checkbox" checked={field.searchable} onChange={(e) => updateField(index, { searchable: e.target.checked, ...(e.target.checked ? {} : { semantic: false }) })} /> Searchable</label>
+              <label className="platform-checkbox"><input type="checkbox" checked={field.semantic} disabled={!field.searchable} onChange={(e) => updateField(index, { semantic: e.target.checked })} /> Include in semantic text</label>
+              <label className="platform-checkbox"><input type="checkbox" checked={Boolean(field.filterable)} onChange={(e) => updateField(index, { filterable: e.target.checked, query_filter_mode: e.target.checked ? (field.query_filter_mode || "none") : "none" })} /> Allow result filters</label>
+              <label className="setting-field"><span>Query match behavior</span><select value={field.query_filter_mode || "none"} disabled={!field.filterable} onChange={(e) => updateField(index, { query_filter_mode: e.target.value as PlatformFieldConfig["query_filter_mode"] })}>
+                <option value="none">Ranking only</option><option value="preferred">Preferred (boost matches)</option><option value="required">Required (filter results)</option>
+              </select></label>
+              <label className="setting-field"><span>Multiple values</span><select value={field.query_match || "all"} disabled={!field.filterable || field.query_filter_mode !== "required"} onChange={(e) => updateField(index, { query_match: e.target.value as PlatformFieldConfig["query_match"] })}>
+                <option value="all">Require all values</option><option value="any">Match any value</option>
+              </select></label>
               <button type="button" className="secondary-button danger-button" onClick={() => removeField(index)} disabled={fields.length <= 1}>Remove</button>
             </div>)}
           </div>
@@ -916,7 +976,7 @@ export default function PlatformPanel() {
       <section className="panel platform-test-panel">
         <div className="panel-title-row"><div><span className="section-kicker">02 / INGESTION & TEST</span><h2>Load and test engine data</h2></div><span className="method-badge">Admin only</span></div>
         <div className="platform-form-grid">
-          <label className="setting-field"><span>Search engine</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select an engine</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
+          <label className="setting-field"><span>Search engine</span><select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setSearchFilters([]); setSearchResult(null); if (e.target.value) { void loadHistory(e.target.value); void loadFeedback(e.target.value); } else { setCategoryHistory([]); setFeedbackSummary(null); } }}><option value="">Select an engine</option>{categories.map((item) => <option key={item.config.category_id} value={item.config.category_id}>{item.config.display_name}</option>)}</select></label>
           <div className="setting-field"><span>Selected engine source</span><small>{selectedRecord ? selectedRecord.config.source.type + (selectedRecord.config.source.type === "sqlserver" ? " · " + selectedRecord.config.source.schema + "." + selectedRecord.config.source.table : "") : "No category selected"}</small></div>
         </div>
         {selectedRecord?.config.source.type === "push" && <form onSubmit={(event) => void ingest(event)}>
@@ -925,8 +985,42 @@ export default function PlatformPanel() {
         </form>}
         <form onSubmit={(event) => void runTestSearch(event)}>
           <div className="platform-form-grid">
-            <label className="setting-field wide"><span>Natural-language test query</span><input value={query} onChange={(e) => setQuery(e.target.value)} required placeholder="e.g. Shreyansh OCR expert in Indore" /></label>
+            <label className="setting-field wide"><span>Natural-language test query</span><input value={query} onChange={(e) => setQuery(e.target.value)} required placeholder="e.g. Python backend developer in Noida" /></label>
           </div>
+          {selectedRecord && <div className="settings-section-title">
+            <div><h3>Optional result filters</h3><p>These filter indexed category results. They are different from SQL source filters used during sync.</p></div>
+            <button type="button" className="secondary-button" onClick={addSearchFilter}>Add filter</button>
+          </div>}
+          {searchFilters.map((filter, index) => {
+            const filterableFields = selectedRecord?.config.fields.filter((field) => field.filterable) ?? [];
+            const selectedField = filterableFields.find((field) => field.key === filter.field) ?? filterableFields[0];
+            const type = selectedField?.data_type || "text";
+            const operators = type === "text" || type === "keyword"
+              ? ["eq", "ne", "in", "contains", "is_null", "not_null"]
+              : type === "boolean"
+                ? ["eq", "ne", "in", "is_null", "not_null"]
+                : ["eq", "ne", "in", "gte", "lte", "between", "is_null", "not_null"];
+            return <div className="platform-field-row" key={index}>
+              <label className="setting-field"><span>Field</span><select value={filter.field} onChange={(e) => updateSearchFilter(index, { field: e.target.value, operator: "eq", value: "", values: [] })}>
+                {filterableFields.map((field) => <option key={field.key} value={field.key}>{field.label} ({field.key})</option>)}
+              </select></label>
+              <label className="setting-field"><span>Operator</span><select value={filter.operator} onChange={(e) => updateSearchFilter(index, { operator: e.target.value as PlatformSearchFilter["operator"], value: "", values: [] })}>
+                {operators.map((operator) => <option key={operator} value={operator}>{operator}</option>)}
+              </select></label>
+              {filter.operator !== "is_null" && filter.operator !== "not_null" && <label className="setting-field"><span>{filter.operator === "between" ? "Lower, upper values" : filter.operator === "in" ? "Comma-separated values" : "Value"}</span><input
+                value={filter.operator === "in" || filter.operator === "between" ? (filter.values || []).join(", ") : String(filter.value ?? "")}
+                onChange={(e) => {
+                  if (filter.operator === "in" || filter.operator === "between") {
+                    updateSearchFilter(index, { values: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) });
+                  } else {
+                    updateSearchFilter(index, { value: e.target.value });
+                  }
+                }}
+                placeholder={type === "date" ? "YYYY-MM-DD" : "Enter a value"}
+              /></label>}
+              <button type="button" className="secondary-button danger-button" onClick={() => setSearchFilters((current) => current.filter((_, i) => i !== index))}>Remove</button>
+            </div>;
+          })}
           <div className="settings-actions"><span className="action-spacer" /><button type="submit" className="primary-button" disabled={!selectedCategory || searching}>{searching ? "Searching…" : "Test engine search"}</button></div>
         </form>
         {feedbackSummary && <div className="platform-history">
