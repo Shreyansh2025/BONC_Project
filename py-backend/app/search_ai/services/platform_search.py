@@ -26,6 +26,7 @@ from app.search_ai.services.platform_common import (
     candidate_indices,
     contains_loose,
     correct_query,
+    shares_any_word,
 )
 
 
@@ -317,6 +318,26 @@ def _phrase_score(query: str, config: CategoryConfig, document: dict[str, Any]) 
 
 
 
+def _semantic_candidate_is_acceptable(
+    score: float,
+    query: str,
+    config: CategoryConfig,
+    document: dict[str, Any],
+) -> bool:
+    """Gate moderate-confidence semantic matches on meaningful lexical overlap.
+
+    This reduces broad semantic false positives while preserving high-confidence
+    matches and category-local synonym matches supplied in the expanded query.
+    """
+    if score >= config.rules.semantic_high_confidence_score:
+        return True
+    return shares_any_word(
+        query,
+        _field_text(config, document),
+        stop_words=_STOP_WORDS,
+    )
+
+
 def _parse_boolean(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -582,6 +603,7 @@ def search_category(
     scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
+    semantic_rejected_count = 0
     if (
         not exact_identifier_positions
         and config.rules.semantic_enabled
@@ -593,8 +615,18 @@ def search_category(
         limit = min(config.rules.semantic_candidate_limit, len(docs))
         similarities, positions = index.vectors_index.search(query_vector, limit)
         for similarity, position in zip(similarities[0], positions[0]):
-            if position >= 0:
-                semantic_scores[int(position)] = max(0.0, float(similarity) * 100.0)
+            if position < 0:
+                continue
+            semantic_score = max(0.0, float(similarity) * 100.0)
+            if not _semantic_candidate_is_acceptable(
+                semantic_score,
+                expanded_lexical_query,
+                config,
+                docs[int(position)],
+            ):
+                semantic_rejected_count += 1
+                continue
+            semantic_scores[int(position)] = semantic_score
 
     lexical_positions = (
         candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
@@ -704,6 +736,9 @@ def search_category(
             "synonym_expansions": synonym_expansions,
             "semantic_query": query,
             **filter_info,
+            "semantic_high_confidence_score": config.rules.semantic_high_confidence_score,
+            "semantic_candidates_kept": len(semantic_scores),
+            "semantic_candidates_rejected": semantic_rejected_count,
             "explanation": understanding["explanation"],
         },
         "corrected_query": lexical_query,
