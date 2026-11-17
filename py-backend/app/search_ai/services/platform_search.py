@@ -352,11 +352,12 @@ def _coerce_filter_value(value: Any, data_type: str) -> Any:
     if data_type == "date":
         try:
             if isinstance(value, datetime):
-                return value
-            if isinstance(value, date):
-                return datetime.combine(value, datetime.min.time())
-            text_value = str(value).strip().replace("Z", "+00:00")
-            parsed = datetime.fromisoformat(text_value)
+                parsed = value
+            elif isinstance(value, date):
+                parsed = datetime.combine(value, datetime.min.time())
+            else:
+                text_value = str(value).strip().replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(text_value)
             if parsed.tzinfo is not None:
                 parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
             return parsed
