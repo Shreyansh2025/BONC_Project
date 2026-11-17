@@ -546,6 +546,38 @@ class SearchPlatformModelTests(unittest.TestCase):
         }
         self.assertGreater(_phrase_score("machine learning", config, document), 0)
 
+    def test_source_sync_does_not_sort_source_rows(self):
+        config = CategoryConfig.model_validate(people_config())
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.mappings.return_value.all.return_value = [{
+            "_document_id": "person-1",
+            "name": "Person",
+            "skills": "Python",
+            "bio": "Developer",
+            "location": "Indore",
+        }]
+        engine = MagicMock()
+        engine.connect.return_value = connection
+
+        with (
+            patch(
+                "app.search_ai.services.source_sync.validate_sqlserver_source",
+                return_value={"is_valid": True, "warnings": []},
+            ),
+            patch("app.search_ai.services.source_sync._source_engine", return_value=engine),
+            patch(
+                "app.search_ai.services.source_sync.replace_documents",
+                return_value=1,
+            ) as replace_mock,
+        ):
+            synced = sync_sqlserver_category(config, updated_by="test")
+
+        query = connection.execute.call_args.args[0]
+        self.assertNotIn("ORDER BY", query.text.upper())
+        self.assertEqual(synced, 1)
+        replace_mock.assert_called_once()
+
     def test_source_sync_refuses_blank_or_null_document_ids(self):
         config = CategoryConfig.model_validate(people_config())
         connection = MagicMock()
