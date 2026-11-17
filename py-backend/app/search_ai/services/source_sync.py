@@ -884,6 +884,26 @@ def sync_sqlserver_category(config: CategoryConfig, *, updated_by: str) -> int:
         raise ValueError("This category does not use a SQL Server source")
 
     source = config.source
+
+    # Enforce the same ID/filter preflight on the server immediately before
+    # reading source records. The admin button is useful feedback, but it must
+    # not be the only protection: direct API callers must not be able to sync
+    # duplicate, NULL, blank, or empty source identities.
+    profile_id = source.connection_env.removeprefix("SEARCH_SOURCE_")
+    preflight = validate_sqlserver_source(
+        profile_id,
+        schema=source.schema,
+        table=source.table,
+        id_column=source.id_column,
+        filters=source.filters,
+        max_records=source.max_records,
+    )
+    if not preflight["is_valid"]:
+        issues = "; ".join(preflight["warnings"]) or "The source did not pass identity validation."
+        raise ValueError(
+            "Source preflight failed; refusing to replace the existing index. " + issues
+        )
+
     columns = [field.source_column for field in config.fields]
     if len(columns) != len(set(columns)):
         raise ValueError("A source column can only be mapped once")
