@@ -135,6 +135,7 @@ class CategoryRules(StrictModel):
     lexical_enabled: bool = True
     semantic_enabled: bool = True
     semantic_min_score: float = Field(default=20.0, ge=0.0, le=100.0)
+    semantic_high_confidence_score: float = Field(default=75.0, ge=0.0, le=100.0)
     semantic_candidate_limit: int = Field(default=50, ge=1, le=200)
     lexical_weight: float = Field(default=0.65, ge=0.0, le=1.0)
     semantic_weight: float = Field(default=0.35, ge=0.0, le=1.0)
