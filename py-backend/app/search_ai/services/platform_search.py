@@ -28,6 +28,11 @@ from app.search_ai.services.platform_common import (
     correct_query,
     shares_any_word,
 )
+from app.search_ai.services.ranking_v2 import (
+    build_corpus_statistics,
+    reciprocal_rank_fusion_score,
+    score_bm25f,
+)
 
 
 _STOP_WORDS = {"a", "an", "and", "at", "for", "in", "near", "of", "on", "the", "to", "with"}
@@ -43,6 +48,7 @@ class CategoryIndex:
     inverted_index: dict[str, set[int]]
     field_values: dict[str, set[str]]
     document_id_lookup: dict[str, set[int]] = field(default_factory=dict)
+    ranking_statistics: dict[str, Any] = field(default_factory=dict)
 
 
 _INDEXES: dict[str, CategoryIndex] = {}
@@ -207,6 +213,7 @@ def _get_category_index(category: dict[str, Any]) -> CategoryIndex:
         inverted_index=inverted_index,
         field_values=field_values,
         document_id_lookup=document_id_lookup,
+        ranking_statistics=build_corpus_statistics(config, documents),
     )
     with _INDEX_LOCK:
         _INDEXES[category_id] = built
@@ -336,19 +343,26 @@ def _semantic_candidate_is_acceptable(
     config: CategoryConfig,
     document: dict[str, Any],
 ) -> bool:
-    """Gate moderate-confidence semantic matches on meaningful lexical overlap.
+    """Reject medium-confidence candidates supported by only one generic term.
 
-    This reduces broad semantic false positives while preserving high-confidence
-    matches and category-local synonym matches supplied in the expanded query.
+    Very high model confidence remains a valid semantic-only path. Below that
+    threshold, multi-term queries must share at least two meaningful terms
+    (or every term for one-term queries), with field labels excluded from text.
     """
     if score >= config.rules.semantic_high_confidence_score:
         return True
-    return shares_any_word(
-        query,
-        _field_values_text(config, document),
-        stop_words=_STOP_WORDS,
-    )
-
+    query_tokens = {
+        token for token in _normalise(query).split()
+        if token not in _STOP_WORDS
+    }
+    target_tokens = {
+        token for token in _normalise(_field_values_text(config, document)).split()
+        if token not in _STOP_WORDS
+    }
+    overlap = query_tokens & target_tokens
+    required_overlap = min(2, len(query_tokens))
+    return bool(query_tokens) and len(overlap) >= required_overlap
+}
 
 def _parse_boolean(value: Any) -> bool | None:
     if isinstance(value, bool):
@@ -555,25 +569,34 @@ def _preferred_constraint_bonus(
     config: CategoryConfig,
     constraints: list[dict[str, Any]],
 ) -> float:
+    """Apply a small generic boost for recognized field values.
+
+    This is ranking evidence, not a hard filter. It intentionally works for
+    fields whose query_filter_mode is 'none'; only required constraints are
+    applied as filters by _apply_result_filters.
+    """
     fields = {field.key: field for field in config.fields}
-    preferred = [
+    hints = [
         item for item in constraints
         if item.get("applied_as") == "ranking_hint_only"
         and item.get("field") in fields
-        and fields[item["field"]].query_filter_mode == "preferred"
     ]
-    if not preferred:
+    if not hints:
         return 0.0
+
+    role_boosts = {
+        "title": 1.5, "skill": 1.4, "category": 1.2,
+        "location": 1.1, "description": 0.8, "general": 0.8,
+    }
     matched_weight = 0.0
     total_weight = 0.0
-    for item in preferred:
+    for item in hints:
         field = fields[item["field"]]
-        weight = max(float(field.weight), 1.0)
+        weight = max(float(field.weight), 1.0) * role_boosts.get(field.role, 0.8)
         total_weight += weight
         if _document_matches_query_constraint(document, field, item):
             matched_weight += weight
-    return round(8.0 * matched_weight / total_weight, 2) if total_weight else 0.0
-
+    return round(6.0 * matched_weight / total_weight, 2) if total_weight else 0.0
 
 def search_category(
     *,
@@ -583,6 +606,7 @@ def search_category(
     page_size: int = 10,
     filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Search one category with shared BM25F retrieval and hybrid rank fusion."""
     category = category_store.get_category(category_id)
     config: CategoryConfig = category["config"]
     if category["status"] != "active" or not config.active:
@@ -593,17 +617,11 @@ def search_category(
     understanding = interpret_query(
         query, config, field_values=index.field_values
     )
-    # Only generic residual words are spell-corrected. Exact values such as
-    # names, locations and skills are retained as entered; each engine's
-    # indexed vocabulary remains isolated from every other engine.
     lexical_query = correct_query(understanding["lexical_query"], index.vocabulary)
     explicit_filters = filters or []
     eligible_positions, filter_info = _apply_result_filters(
         docs, config, understanding.get("constraints", []), explicit_filters
     )
-    # IDs are matched literally after trimming outer whitespace. Do not
-    # case-fold, strip punctuation or tokenize them: "AB-12", "AB12",
-    # "abc" and "ABC" may be distinct identifiers.
     exact_identifier_positions = index.document_id_lookup.get(query.strip(), set())
     synonym_expansions = understanding.get("synonym_expansions", [])
     expansion_terms = [
@@ -612,7 +630,6 @@ def search_category(
         for term in expansion.get("alternatives", [])
     ]
     expanded_lexical_query = " ".join([lexical_query, *expansion_terms]).strip()
-    scored: list[dict[str, Any]] = []
 
     semantic_scores: dict[int, float] = {}
     semantic_rejected_count = 0
@@ -638,7 +655,10 @@ def search_category(
             ):
                 semantic_rejected_count += 1
                 continue
-            semantic_scores[int(position)] = semantic_score
+            if semantic_score >= config.rules.semantic_min_score:
+                semantic_scores[int(position)] = semantic_score
+            else:
+                semantic_rejected_count += 1
 
     lexical_positions = (
         candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
@@ -651,67 +671,114 @@ def search_category(
         else lexical_positions | set(semantic_scores)
     ) & eligible_positions
 
+    ranking_statistics = (
+        index.ranking_statistics
+        or build_corpus_statistics(config, docs)
+    )
+    lexical_evidence: dict[int, tuple[float, list[str], dict[str, Any]]] = {}
+    if config.rules.lexical_enabled and not exact_identifier_positions:
+        for position in lexical_positions:
+            lexical_evidence[position] = score_bm25f(
+                lexical_query,
+                config,
+                docs[position],
+                ranking_statistics,
+                synonym_expansions=synonym_expansions,
+                stop_words=_STOP_WORDS,
+            )
+
+    lexical_order = sorted(
+        (
+            position for position, evidence in lexical_evidence.items()
+            if evidence[0] > 0
+        ),
+        key=lambda position: (
+            lexical_evidence[position][0],
+            lexical_evidence[position][2]["query_term_coverage"],
+        ),
+        reverse=True,
+    )
+    semantic_order = sorted(
+        semantic_scores,
+        key=lambda position: semantic_scores[position],
+        reverse=True,
+    )
+    lexical_ranks = {
+        position: rank for rank, position in enumerate(lexical_order, start=1)
+    }
+    semantic_ranks = {
+        position: rank for rank, position in enumerate(semantic_order, start=1)
+    }
+    hybrid_available = bool(lexical_ranks and semantic_ranks)
+
+    scored: list[dict[str, Any]] = []
     for position in sorted(candidate_positions):
         document = docs[position]
         exact_identifier_match = position in exact_identifier_positions
-        lexical_score, matched_fields = (
-            _lexical_score(
-                lexical_query,
-                config,
-                document,
-                synonym_expansions=synonym_expansions,
-            )
-            if position in lexical_positions else (0.0, [])
+        lexical_score, matched_fields, lexical_details = lexical_evidence.get(
+            position, (0.0, [], {
+                "bm25f_raw": 0.0,
+                "query_term_coverage": 0.0,
+                "matched_terms": [],
+                "missing_terms": [],
+                "phrase_score": 0.0,
+                "phrase_match": False,
+            })
         )
-        phrase_score = (
-            _phrase_score(lexical_query, config, document)
-            if position in lexical_positions else 0.0
-        )
-        phrase_bonus = min(10.0, phrase_score * 0.15)
-        lexical_score = min(100.0, lexical_score + phrase_bonus)
         semantic_score = semantic_scores.get(position, 0.0)
         if exact_identifier_match:
             lexical_score = 100.0
-            phrase_score = 0.0
             matched_fields = ["document_id"]
-        if semantic_score < config.rules.semantic_min_score:
-            semantic_score = 0.0
-
-        # A score from a disabled/zero-weight signal must not silently
-        # become the final score. Apply configured weights consistently.
-        lexical_component = (
-            lexical_score * config.rules.lexical_weight
-            if config.rules.lexical_enabled and config.rules.lexical_weight > 0
-            else 0.0
-        )
-        semantic_component = (
-            semantic_score * config.rules.semantic_weight
-            if config.rules.semantic_enabled and config.rules.semantic_weight > 0
-            else 0.0
-        )
-        # Do not dilute lexical scores when this category has no semantic
-        # vectors (for example, all mapped fields are non-semantic or empty).
-        semantic_signal_available = (
-            config.rules.semantic_enabled and index.vectors_index is not None
-        )
-        denominator = (
-            (config.rules.lexical_weight if config.rules.lexical_enabled else 0.0)
-            + (config.rules.semantic_weight if semantic_signal_available else 0.0)
-        )
-        if denominator <= 0:
+            lexical_details = {
+                "bm25f_raw": 0.0,
+                "query_term_coverage": 1.0,
+                "matched_terms": ["document_id"],
+                "missing_terms": [],
+                "phrase_score": 0.0,
+                "phrase_match": False,
+            }
+        elif lexical_score <= 0 and semantic_score <= 0:
             continue
-        base_score = (
-            100.0
-            if exact_identifier_match
-            else (lexical_component + semantic_component) / denominator
-        )
+
+        lexical_rank = lexical_ranks.get(position)
+        semantic_rank = semantic_ranks.get(position)
         preferred_bonus = _preferred_constraint_bonus(
             document, config, understanding.get("constraints", [])
         )
+
+        if exact_identifier_match:
+            base_score = 100.0
+        elif hybrid_available:
+            base_score = reciprocal_rank_fusion_score(
+                lexical_rank,
+                semantic_rank,
+                lexical_weight=config.rules.lexical_weight if config.rules.lexical_enabled else 0.0,
+                semantic_weight=config.rules.semantic_weight if config.rules.semantic_enabled else 0.0,
+            )
+        elif lexical_ranks:
+            # Preserve the interpretable BM25F score when semantic retrieval
+            # is unavailable or contributed no accepted candidates.
+            base_score = lexical_score
+        else:
+            base_score = semantic_score
+
         score = min(100.0, base_score + preferred_bonus)
         if score <= 0:
             continue
 
+        ranking_signals = {
+            "engine": "bm25f_rrf_v2",
+            "fusion": "rrf" if hybrid_available else "single_channel",
+            "lexical_rank": lexical_rank,
+            "semantic_rank": semantic_rank,
+            "bm25f_raw": lexical_details["bm25f_raw"],
+            "query_term_coverage": lexical_details["query_term_coverage"],
+            "matched_terms": lexical_details["matched_terms"],
+            "missing_terms": lexical_details["missing_terms"],
+            "phrase_match": lexical_details["phrase_match"],
+            "rank_fusion_score": round(base_score, 2),
+            "constraint_boost": preferred_bonus,
+        }
         result = {
             "id": document["document_id"],
             "title": document.get("title") or document["document_id"],
@@ -719,10 +786,11 @@ def search_category(
             "metadata": document.get("metadata", {}),
             "score": round(score, 2),
             "lexical_score": round(lexical_score, 2),
-            "phrase_score": round(phrase_score, 2),
+            "phrase_score": round(lexical_details["phrase_score"], 2),
             "semantic_score": round(semantic_score, 2),
             "preferred_filter_bonus": preferred_bonus,
             "matched_fields": matched_fields,
+            "ranking_signals": ranking_signals,
             "exact_identifier_match": exact_identifier_match,
             "category": category_id,
         }
@@ -732,7 +800,9 @@ def search_category(
         key=lambda item: (
             item["exact_identifier_match"],
             item["score"],
+            item["lexical_score"],
             item["semantic_score"],
+            item["ranking_signals"]["query_term_coverage"],
         ),
         reverse=True,
     )
@@ -753,9 +823,12 @@ def search_category(
             "synonym_expansions": synonym_expansions,
             "semantic_query": query,
             **filter_info,
-            "semantic_high_confidence_score": config.rules.semantic_high_confidence_score,
-            "semantic_candidates_kept": len(semantic_scores),
+            "ranking_engine": "bm25f_rrf_v2",
+            "ranking_fusion": "reciprocal_rank_fusion" if hybrid_available else "single_channel",
+            "lexical_candidates": len(lexical_order),
+            "semantic_candidates_kept": len(semantic_order),
             "semantic_candidates_rejected": semantic_rejected_count,
+            "semantic_high_confidence_score": config.rules.semantic_high_confidence_score,
             "explanation": understanding["explanation"],
         },
         "corrected_query": lexical_query,
@@ -766,3 +839,4 @@ def search_category(
         "config_version": int(category["config_version"]),
         "index_version": index.version,
     }
+
