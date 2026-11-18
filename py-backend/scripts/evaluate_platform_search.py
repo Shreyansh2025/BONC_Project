@@ -141,10 +141,15 @@ def call_search(
 
 
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
-    values = [
-        float(row[key]) for row in rows
-        if isinstance(row.get(key), (int, float))
-    ]
+    """Average one metric stored inside each benchmark row's metrics object."""
+    values: list[float] = []
+    for row in rows:
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        value = metrics.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(float(value))
     return sum(values) / len(values) if values else None
 
 
