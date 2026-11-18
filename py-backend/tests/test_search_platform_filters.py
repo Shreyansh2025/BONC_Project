@@ -311,14 +311,10 @@ class PlatformResultFilterTests(unittest.TestCase):
             places=2,
         )
 
-    def test_exact_indexed_value_query_uses_soft_hints_without_empty_lexical_scan(self):
+    def test_non_searchable_indexed_value_can_drive_soft_hint_results(self):
         payload = config_payload()
         config = CategoryConfig.model_validate(payload)
         documents = sample_documents()
-        documents[1]["fields"]["title"] = "Frontend Developer"
-        documents[1]["title"] = "Frontend Developer"
-        documents[2]["fields"]["title"] = "Sales Representative"
-        documents[2]["title"] = "Sales Representative"
         index = category_index(config, documents)
         category = {
             "config": config,
@@ -331,11 +327,14 @@ class PlatformResultFilterTests(unittest.TestCase):
             patch("app.search_ai.services.platform_search.category_store.get_category", return_value=category),
             patch("app.search_ai.services.platform_search._get_category_index", return_value=index),
         ):
-            result = search_category(query="Backend Developer", category_id="jobs")
+            result = search_category(query="true", category_id="jobs")
 
-        self.assertEqual([item["id"] for item in result["data"]], ["job-good"])
+        self.assertEqual(
+            {item["id"] for item in result["data"]},
+            {"job-good", "job-wrong-city"},
+        )
         self.assertEqual(result["query_plan"]["lexical_candidates"], 0)
-        self.assertGreater(result["data"][0]["preferred_filter_bonus"], 0)
+        self.assertTrue(all(item["preferred_filter_bonus"] > 0 for item in result["data"]))
         self.assertFalse(result["query_plan"]["filters_applied"])
 
     def test_required_skill_and_city_values_are_applied_as_hard_filters(self):
