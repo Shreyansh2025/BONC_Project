@@ -369,7 +369,7 @@ def _semantic_candidate_is_acceptable(
         max(90.0, config.rules.semantic_high_confidence_score + 10.0),
     )
     return score >= semantic_only_threshold
-}
+
 
 def _parse_boolean(value: Any) -> bool | None:
     if isinstance(value, bool):
