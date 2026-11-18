@@ -454,6 +454,19 @@ export interface PlatformSearchResult {
   semantic_score: number;
   preferred_filter_bonus?: number;
   matched_fields: string[];
+  ranking_signals?: {
+    engine: string;
+    fusion: string;
+    lexical_rank: number | null;
+    semantic_rank: number | null;
+    bm25f_raw: number;
+    query_term_coverage: number;
+    matched_terms: string[];
+    missing_terms: string[];
+    phrase_match: boolean;
+    rank_fusion_score: number;
+    constraint_boost: number;
+  };
   exact_identifier_match?: boolean;
   category: string;
 }
@@ -492,6 +505,9 @@ export interface PlatformQueryPlan {
   semantic_high_confidence_score?: number;
   semantic_candidates_kept?: number;
   semantic_candidates_rejected?: number;
+  ranking_engine?: string;
+  ranking_fusion?: string;
+  lexical_candidates?: number;
   explanation: string;
 }
 

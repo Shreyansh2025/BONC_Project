@@ -960,7 +960,7 @@ export default function PlatformPanel() {
           <div className="settings-section-title"><div><h3>Search rules</h3><p>These are runtime ranking configurations, not model fine-tuning.</p></div></div>
           <div className="platform-form-grid">
             <label className="setting-field"><span>Minimum semantic score</span><input type="number" min="0" max="100" step="0.5" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} /></label>
-            <label className="setting-field"><span>High-confidence semantic bypass</span><input type="number" min="0" max="100" step="0.5" value={highConfidenceScore} onChange={(e) => setHighConfidenceScore(Number(e.target.value))} /><small>Semantic matches below this score need at least one meaningful query word in common.</small></label>
+            <label className="setting-field"><span>High-confidence semantic bypass</span><input type="number" min="0" max="100" step="0.5" value={highConfidenceScore} onChange={(e) => setHighConfidenceScore(Number(e.target.value))} /><small>Below the semantic-only fallback threshold, multi-term queries need two meaningful shared terms (single-term queries need one). Otherwise, the semantic score must be very high.</small></label>
             <label className="setting-field"><span>Semantic candidate limit</span><input type="number" min="1" max="200" value={candidateLimit} onChange={(e) => setCandidateLimit(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Lexical weight</span><input type="number" min="0" max="1" step="0.05" value={lexicalWeight} onChange={(e) => setLexicalWeight(Number(e.target.value))} /></label>
             <label className="setting-field"><span>Semantic weight</span><input type="number" min="0" max="1" step="0.05" value={semanticWeight} onChange={(e) => setSemanticWeight(Number(e.target.value))} /></label>
@@ -1078,7 +1078,19 @@ export default function PlatformPanel() {
                 ? "Exact document ID match"
                 : (item.matched_fields.join(", ") || "Semantic match")}
               {item.phrase_score ? " · phrase " + item.phrase_score.toFixed(1) : ""}
-            </small><pre>{pretty(item.fields)}</pre>
+            </small>
+            {item.ranking_signals && <small className="platform-ranking-signals">
+              {item.ranking_signals.engine} · {item.ranking_signals.fusion}
+              {" · lex #" + (item.ranking_signals.lexical_rank ?? "—")}
+              {" · semantic #" + (item.ranking_signals.semantic_rank ?? "—")}
+              {" · coverage " + (item.ranking_signals.query_term_coverage * 100).toFixed(0) + "%"}
+              {" · BM25F " + item.ranking_signals.bm25f_raw.toFixed(2)}
+              {" · fused " + item.ranking_signals.rank_fusion_score.toFixed(1)}
+              {item.ranking_signals.constraint_boost ? " · hint +" + item.ranking_signals.constraint_boost.toFixed(1) : ""}
+              {item.ranking_signals.matched_terms.length ? " · matched: " + item.ranking_signals.matched_terms.join(", ") : ""}
+              {item.ranking_signals.missing_terms.length ? " · missing: " + item.ranking_signals.missing_terms.join(", ") : ""}
+            </small>}
+            <pre>{pretty(item.fields)}</pre>
               <div className="platform-feedback-actions">
                 <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, true)}>{feedbackSaving === item.id + ":relevant" ? "Saving…" : "Relevant"}</button>
                 <button type="button" className="secondary-button" disabled={feedbackSaving.startsWith(item.id)} onClick={() => void labelResult(item.id, false)}>{feedbackSaving === item.id + ":not-relevant" ? "Saving…" : "Not relevant"}</button>
