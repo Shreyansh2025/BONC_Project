@@ -364,8 +364,9 @@ def _semantic_candidate_is_acceptable(
     # A semantic-only match with no/insufficient literal overlap needs a much
     # stronger margin than the configured normal high-confidence threshold.
     # This stops one generic shared word from admitting weak candidates.
-    semantic_only_threshold = max(
-        90.0, config.rules.semantic_high_confidence_score + 10.0
+    semantic_only_threshold = min(
+        100.0,
+        max(90.0, config.rules.semantic_high_confidence_score + 10.0),
     )
     return score >= semantic_only_threshold
 }
