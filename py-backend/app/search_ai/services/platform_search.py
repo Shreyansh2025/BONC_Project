@@ -677,7 +677,7 @@ def search_category(
     )
     lexical_evidence: dict[int, tuple[float, list[str], dict[str, Any]]] = {}
     if config.rules.lexical_enabled and not exact_identifier_positions:
-        for position in lexical_positions:
+        for position in lexical_positions & eligible_positions:
             lexical_evidence[position] = score_bm25f(
                 lexical_query,
                 config,
@@ -699,7 +699,7 @@ def search_category(
         reverse=True,
     )
     semantic_order = sorted(
-        semantic_scores,
+        (position for position in semantic_scores if position in eligible_positions),
         key=lambda position: semantic_scores[position],
         reverse=True,
     )

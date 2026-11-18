@@ -306,7 +306,8 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertTrue(result["data"])
         self.assertAlmostEqual(
             result["data"][0]["score"],
-            result["data"][0]["lexical_score"],
+            result["data"][0]["lexical_score"]
+            + result["data"][0]["preferred_filter_bonus"],
             places=2,
         )
 
@@ -457,6 +458,25 @@ class PlatformResultFilterTests(unittest.TestCase):
                 self.config,
                 [{"field": "experience", "operator": "gte", "value": "NaN"}],
             )
+
+    def test_recognized_index_value_boosts_ranking_without_becoming_a_filter(self):
+        payload = config_payload()
+        config = CategoryConfig.model_validate(payload)
+        document = sample_documents()[0]
+        bonus = _preferred_constraint_bonus(
+            document,
+            config,
+            [{
+                "field": "title",
+                "role": "title",
+                "values": ["Backend Developer"],
+                "match": "exact_index_value",
+                "query_match": "all",
+                "applied_as": "ranking_hint_only",
+            }],
+        )
+        self.assertGreater(bonus, 0)
+        self.assertLessEqual(bonus, 6.0)
 
     def test_moderate_semantic_match_requires_meaningful_word_overlap(self):
         document = {
