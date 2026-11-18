@@ -743,14 +743,22 @@ def search_category(
                 "phrase_score": 0.0,
                 "phrase_match": False,
             }
-        elif lexical_score <= 0 and semantic_score <= 0:
-            continue
 
         lexical_rank = lexical_ranks.get(position)
         semantic_rank = semantic_ranks.get(position)
         preferred_bonus = _preferred_constraint_bonus(
             document, config, understanding.get("constraints", [])
         )
+        # Fully recognized field-value queries can legitimately have no
+        # residual lexical tokens. Keep matching hint documents instead of
+        # dropping them before their bounded soft boost is applied.
+        if (
+            not exact_identifier_match
+            and lexical_score <= 0
+            and semantic_score <= 0
+            and preferred_bonus <= 0
+        ):
+            continue
 
         if exact_identifier_match:
             base_score = 100.0
