@@ -490,8 +490,20 @@ class PlatformResultFilterTests(unittest.TestCase):
         self.assertFalse(
             _semantic_candidate_is_acceptable(55.0, "skills backend python", self.config, document)
         )
-        self.assertTrue(
+        self.assertFalse(
             _semantic_candidate_is_acceptable(80.0, "backend developer python", self.config, document)
+        )
+        self.assertTrue(
+            _semantic_candidate_is_acceptable(95.0, "backend developer python", self.config, document)
+        )
+        generic_overlap = {
+            "document_id": "generic-developer",
+            "fields": {"title": "Developer advocate", "skills": "Communication", "city": "Delhi"},
+        }
+        self.assertFalse(
+            _semantic_candidate_is_acceptable(
+                55.0, "backend developer", self.config, generic_overlap
+            )
         )
         related_document = {
             "document_id": "job-related",

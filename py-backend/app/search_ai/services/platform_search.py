@@ -349,8 +349,6 @@ def _semantic_candidate_is_acceptable(
     threshold, multi-term queries must share at least two meaningful terms
     (or every term for one-term queries), with field labels excluded from text.
     """
-    if score >= config.rules.semantic_high_confidence_score:
-        return True
     query_tokens = {
         token for token in _normalise(query).split()
         if token not in _STOP_WORDS
@@ -361,7 +359,15 @@ def _semantic_candidate_is_acceptable(
     }
     overlap = query_tokens & target_tokens
     required_overlap = min(2, len(query_tokens))
-    return bool(query_tokens) and len(overlap) >= required_overlap
+    if query_tokens and len(overlap) >= required_overlap:
+        return True
+    # A semantic-only match with no/insufficient literal overlap needs a much
+    # stronger margin than the configured normal high-confidence threshold.
+    # This stops one generic shared word from admitting weak candidates.
+    semantic_only_threshold = max(
+        90.0, config.rules.semantic_high_confidence_score + 10.0
+    )
+    return score >= semantic_only_threshold
 }
 
 def _parse_boolean(value: Any) -> bool | None:
