@@ -667,15 +667,44 @@ def search_category(
             else:
                 semantic_rejected_count += 1
 
+    # Build the candidate set for recognized field-value hints separately.
+    # This supports a query made entirely from an exact indexed value even when
+    # query understanding removes that value from the residual lexical query.
+    searchable_config_fields = {field.key: field for field in config.fields}
+    hint_constraints = [
+        item for item in understanding.get("constraints", [])
+        if item.get("applied_as") == "ranking_hint_only"
+        and item.get("field") in searchable_config_fields
+    ]
+    hint_positions: set[int] = set()
+    if hint_constraints and not exact_identifier_positions:
+        for position in eligible_positions:
+            document = docs[position]
+            if any(
+                _document_matches_query_constraint(
+                    document,
+                    searchable_config_fields[item["field"]],
+                    item,
+                )
+                for item in hint_constraints
+            ):
+                hint_positions.add(position)
+
+    lexical_terms = [
+        token for token in _normalise(expanded_lexical_query).split()
+        if token not in _STOP_WORDS
+    ]
     lexical_positions = (
         candidate_indices(expanded_lexical_query, index.inverted_index, len(docs))
-        if config.rules.lexical_enabled and not exact_identifier_positions
+        if config.rules.lexical_enabled
+        and not exact_identifier_positions
+        and lexical_terms
         else set()
     )
     candidate_positions = (
         set(exact_identifier_positions)
         if exact_identifier_positions
-        else lexical_positions | set(semantic_scores)
+        else lexical_positions | set(semantic_scores) | hint_positions
     ) & eligible_positions
 
     ranking_statistics = (
