@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "description": "Repeatable baseline queries collected from the manual People, Jobs and Articles search review on 2026-11-19. These cases capture results only; relevance labels are maintained separately.",
+  "cases": [
+    {
+      "id": "people-01",
+      "category": "people",
+      "scenario": "short-role",
+      "query": "Python backend developer",
+      "filters": [],
+      "notes": "Previously tested; main role and core skill query."
+    },
+    {
+      "id": "people-02",
+      "category": "people",
+      "scenario": "skills-only",
+      "query": "Python FastAPI Django PostgreSQL Docker",
+      "filters": [],
+      "notes": "Previously tested; multiple technical skills."
+    },
+    {
+      "id": "people-03",
+      "category": "people",
+      "scenario": "broad-role",
+      "query": "Software developer",
+      "filters": [],
+      "notes": "Previously tested; broad role query."
+    },
+    {
+      "id": "people-04",
+      "category": "people",
+      "scenario": "role-with-location",
+      "query": "Python backend developer in Indore",
+      "filters": [],
+      "notes": "Previously tested; explicit location phrase."
+    },
+    {
+      "id": "people-05",
+      "category": "people",
+      "scenario": "long-no-location",
+      "query": "Looking for a Python backend developer experienced in building scalable applications, REST APIs, databases and AI integrations.",
+      "filters": [],
+      "notes": "Previously tested; long natural-language query without location."
+    },
+    {
+      "id": "people-06",
+      "category": "people",
+      "scenario": "long-with-location",
+      "query": "I am looking for a Python backend developer with experience in FastAPI, Django, PostgreSQL, Docker and REST API development, preferably located in Noida.",
+      "filters": [],
+      "notes": "Earlier manual test; long query with a preferred location."
+    },
+    {
+      "id": "jobs-01",
+      "category": "jobs",
+      "scenario": "short-role",
+      "query": "Python backend developer",
+      "filters": [],
+      "notes": "Previously tested; main role and core skill query."
+    },
+    {
+      "id": "jobs-02",
+      "category": "jobs",
+      "scenario": "skills-only",
+      "query": "Python FastAPI Django REST API PostgreSQL",
+      "filters": [],
+      "notes": "Previously tested; multiple technical skills."
+    },
+    {
+      "id": "jobs-03",
+      "category": "jobs",
+      "scenario": "broad-role",
+      "query": "Software developer",
+      "filters": [],
+      "notes": "Previously tested; broad role query."
+    },
+    {
+      "id": "jobs-04",
+      "category": "jobs",
+      "scenario": "long-no-location",
+      "query": "We need a developer to build scalable backend applications, integrate REST APIs, manage databases and develop AI-powered applications using Python.",
+      "filters": [],
+      "notes": "Previously tested; long natural-language query without location."
+    },
+    {
+      "id": "jobs-05",
+      "category": "jobs",
+      "scenario": "role-with-location",
+      "query": "Python backend developer in Indore",
+      "filters": [],
+      "notes": "Previously tested; explicit location phrase."
+    },
+    {
+      "id": "jobs-06",
+      "category": "jobs",
+      "scenario": "entry-level-role",
+      "query": "Entry level backend developer with Python and API development experience",
+      "filters": [],
+      "notes": "Previously tested; role, skill and experience intent."
+    },
+    {
+      "id": "articles-01",
+      "category": "articles",
+      "scenario": "specific-topic",
+      "query": "Generative AI for Drug Discovery",
+      "filters": [],
+      "notes": "Previously tested; specific article topic."
+    },
+    {
+      "id": "articles-02",
+      "category": "articles",
+      "scenario": "broad-topic",
+      "query": "Artificial Intelligence",
+      "filters": [],
+      "notes": "Previously tested; broad subject."
+    },
+    {
+      "id": "articles-03",
+      "category": "articles",
+      "scenario": "industry-topic",
+      "query": "Industrial machinery and equipment suppliers",
+      "filters": [],
+      "notes": "Previously tested; industry/product topic."
+    },
+    {
+      "id": "articles-04",
+      "category": "articles",
+      "scenario": "product-topic",
+      "query": "Electronic door locks and security solutions",
+      "filters": [],
+      "notes": "Previously tested; product topic."
+    },
+    {
+      "id": "articles-05",
+      "category": "articles",
+      "scenario": "domain-topic",
+      "query": "Nutraceuticals and Ayurveda",
+      "filters": [],
+      "notes": "Previously tested; domain topic."
+    },
+    {
+      "id": "articles-06",
+      "category": "articles",
+      "scenario": "topic-with-location",
+      "query": "Pipe dealers in Kolkata",
+      "filters": [],
+      "notes": "Previously tested; local market/article topic."
+    }
+  ]
+}
